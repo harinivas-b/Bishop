@@ -65,8 +65,13 @@ export default function PaymentCustomerPage({
   const [paymentSuccess, setPaymentSuccess] = useState<{
     orderNumber: string;
     amount: number;
-    tableNumber: string;
+    subtotal: number;
+    tax: number;
     method: string;
+    customerName: string;
+    customerPhone: string;
+    cartItems: DraftCartItem[];
+    createdAt: string;
   } | null>(null);
 
   // Check if Razorpay is configured in environment
@@ -150,6 +155,11 @@ export default function PaymentCustomerPage({
       return;
     }
 
+    if (!customerName.trim()) {
+      toast.error(menuT.nameRequiredError || "Please enter your Name before proceeding.");
+      return;
+    }
+
     setIsSubmitting(true);
 
     const options = {
@@ -157,7 +167,7 @@ export default function PaymentCustomerPage({
       amount: Math.round(amount * 100), // in paise
       currency: "INR",
       name: shopName,
-      description: `Payment for Table ${tableNumber || "Takeaway"}`,
+      description: `Takeaway Order Payment`,
       handler: async function (response: any) {
         toast.success(`Payment Successful! Payment ID: ${response.razorpay_payment_id}`);
         await recordOrder("paid", "razorpay");
@@ -183,22 +193,38 @@ export default function PaymentCustomerPage({
   }
 
   async function recordOrder(status: "paid" | "pending", method: string) {
+    if (!customerName.trim()) {
+      toast.error(menuT.nameRequiredError || "Please enter your Name before proceeding.");
+      return;
+    }
+
     setIsSubmitting(true);
     const supabase = createClient();
     const orderNum = `BISHOP-${Math.floor(Date.now() / 1000).toString().slice(-4)}-${Math.floor(
       Math.random() * 900 + 100
     )}`;
 
+    const taxRate = shop.tax_rate || 0;
+    const computedSubtotal = cartItems.length > 0
+      ? cartItems.reduce((sum, item) => sum + item.price * item.quantity, 0)
+      : amount;
+    const computedTax = cartItems.length > 0
+      ? Number(((computedSubtotal * taxRate) / 100).toFixed(2))
+      : 0;
+    const computedTotal = cartItems.length > 0
+      ? Number((computedSubtotal + computedTax).toFixed(2))
+      : amount;
+
     try {
       if (cartItems.length > 0) {
         // Submit with items via RPC
         const { error: rpcError } = await supabase.rpc("submit_customer_order", {
           p_shop_id: shop.id,
-          p_table_number: tableNumber.trim() || "Table QR",
-          p_customer_name: customerName.trim() || null,
+          p_table_number: "Takeaway",
+          p_customer_name: customerName.trim(),
           p_customer_phone: customerPhone.trim() || null,
           p_payment_method: method,
-          p_notes: `QR Payment via ${method.toUpperCase()}`,
+          p_notes: `Takeaway Payment via ${method.toUpperCase()}`,
           p_items: cartItems,
         });
 
@@ -210,16 +236,16 @@ export default function PaymentCustomerPage({
             .insert({
               shop_id: shop.id,
               order_number: orderNum,
-              customer_name: customerName.trim() || null,
+              customer_name: customerName.trim(),
               customer_phone: customerPhone.trim() || null,
-              table_number: tableNumber.trim() || "Table QR",
+              table_number: "Takeaway",
               status: "pending",
-              subtotal: amount,
-              tax: 0,
-              total: amount,
+              subtotal: computedSubtotal,
+              tax: computedTax,
+              total: computedTotal,
               payment_method: method,
               payment_status: status,
-              notes: `QR Payment via ${method.toUpperCase()}`,
+              notes: `Takeaway Payment via ${method.toUpperCase()}`,
             });
 
           if (directErr) throw directErr;
@@ -229,16 +255,16 @@ export default function PaymentCustomerPage({
         const { error: directErr } = await supabase.from("orders").insert({
           shop_id: shop.id,
           order_number: orderNum,
-          customer_name: customerName.trim() || null,
+          customer_name: customerName.trim(),
           customer_phone: customerPhone.trim() || null,
-          table_number: tableNumber.trim() || "Counter",
+          table_number: "Takeaway",
           status: "pending",
-          subtotal: amount,
-          tax: 0,
-          total: amount,
+          subtotal: computedSubtotal,
+          tax: computedTax,
+          total: computedTotal,
           payment_method: method,
           payment_status: status,
-          notes: `Direct QR Payment via ${method.toUpperCase()}`,
+          notes: `Takeaway Payment via ${method.toUpperCase()}`,
         });
 
         if (directErr) throw directErr;
@@ -251,9 +277,14 @@ export default function PaymentCustomerPage({
 
       setPaymentSuccess({
         orderNumber: orderNum,
-        amount,
-        tableNumber: tableNumber || "Table QR",
+        amount: computedTotal,
+        subtotal: computedSubtotal,
+        tax: computedTax,
         method,
+        customerName: customerName.trim(),
+        customerPhone: customerPhone.trim(),
+        cartItems,
+        createdAt: new Date().toLocaleString(),
       });
       toast.success("Payment recorded successfully!");
     } catch (err: any) {
@@ -264,48 +295,171 @@ export default function PaymentCustomerPage({
     }
   }
 
-  // Success View
+  // Digital Bill / Thermal Receipt View
   if (paymentSuccess) {
+    const taxRate = shop.tax_rate || 0;
+    const halfTaxRate = (taxRate / 2).toFixed(1);
+    const halfTaxAmount = (paymentSuccess.tax / 2).toFixed(2);
+
     return (
-      <div className="min-h-dvh bg-slate-50 flex items-center justify-center p-4">
-        <Card padding="lg" className="w-full max-w-md text-center rounded-3xl space-y-6 shadow-xl border-slate-200">
-          <div className="h-20 w-20 bg-emerald-100 rounded-full flex items-center justify-center mx-auto text-emerald-600">
-            <CheckCircle2 className="h-10 w-10" />
+      <div className="min-h-dvh bg-slate-100 flex items-center justify-center p-4 py-8">
+        <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden print:border-none print:shadow-none print:w-full print:max-w-none">
+          
+          {/* Top Success Banner */}
+          <div className="bg-emerald-600 text-white p-4 text-center print:hidden flex items-center justify-center gap-2">
+            <CheckCircle2 className="h-6 w-6" />
+            <span className="font-extrabold text-base uppercase tracking-wider">{t.paymentSuccess}</span>
           </div>
 
-          <div>
-            <Badge variant="mint" className="mb-2">
-              {paymentSuccess.tableNumber}
-            </Badge>
-            <h1 className="text-2xl font-black text-slate-900">Payment Confirmed!</h1>
-            <p className="text-sm text-slate-500 mt-1">Thank you for your payment to {shopName}.</p>
+          {/* Thermal Receipt Content Container */}
+          <div id="thermal-receipt" className="p-6 font-mono text-xs text-slate-800 space-y-4 bg-white select-text">
+            
+            {/* Header: Shop Name & Info */}
+            <div className="text-center space-y-1">
+              <h1 className="text-xl font-black uppercase tracking-tight text-slate-900">{shopName}</h1>
+              {shop.address && <p className="text-[11px] text-slate-600 leading-tight">{shop.address}</p>}
+              {shop.phone && <p className="text-[11px] text-slate-600">Ph: {shop.phone}</p>}
+              {shop.gst_number && (
+                <p className="text-[11px] font-bold text-slate-700 pt-0.5">{t.gstin}: {shop.gst_number}</p>
+              )}
+            </div>
+
+            {/* Divider */}
+            <div className="border-b-2 border-dashed border-slate-300 my-2" />
+
+            {/* Bill Meta Details */}
+            <div className="space-y-1 text-[11px]">
+              <div className="flex justify-between">
+                <span className="text-slate-500">{t.billNumber}:</span>
+                <span className="font-bold text-slate-900">{paymentSuccess.orderNumber}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">{t.date}:</span>
+                <span>{paymentSuccess.createdAt}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">{t.customerName}:</span>
+                <span className="font-bold text-slate-900">{paymentSuccess.customerName}</span>
+              </div>
+              {paymentSuccess.customerPhone && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">{t.phone}:</span>
+                  <span>{paymentSuccess.customerPhone}</span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-slate-500">{t.table}:</span>
+                <span className="font-bold text-slate-800 uppercase">Takeaway / Parcel</span>
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div className="border-b-2 border-dashed border-slate-300 my-2" />
+
+            {/* Itemized Table */}
+            {paymentSuccess.cartItems.length > 0 ? (
+              <div className="space-y-2">
+                <div className="grid grid-cols-12 font-bold text-[10px] uppercase text-slate-600 border-b border-slate-200 pb-1">
+                  <span className="col-span-1">#</span>
+                  <span className="col-span-5">{t.item}</span>
+                  <span className="col-span-2 text-center">{t.qty}</span>
+                  <span className="col-span-2 text-right">{t.price}</span>
+                  <span className="col-span-2 text-right">{t.totalAmount ? "Total" : "Total"}</span>
+                </div>
+
+                {paymentSuccess.cartItems.map((item, idx) => (
+                  <div key={idx} className="grid grid-cols-12 text-[11px] items-start py-0.5">
+                    <span className="col-span-1 text-slate-400">{idx + 1}</span>
+                    <span className="col-span-5 font-semibold text-slate-900 break-words">{item.name}</span>
+                    <span className="col-span-2 text-center font-bold">{item.quantity}</span>
+                    <span className="col-span-2 text-right text-slate-600">{item.price}</span>
+                    <span className="col-span-2 text-right font-bold text-slate-900">
+                      {(item.price * item.quantity).toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex justify-between text-xs font-semibold py-1">
+                <span>Takeaway Payment</span>
+                <span>{formatCurrency(paymentSuccess.amount)}</span>
+              </div>
+            )}
+
+            {/* Divider */}
+            <div className="border-b-2 border-dashed border-slate-300 my-2" />
+
+            {/* Calculations Breakdown */}
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between text-slate-600">
+                <span>{t.subtotal}</span>
+                <span>{formatCurrency(paymentSuccess.subtotal)}</span>
+              </div>
+
+              {taxRate > 0 && (
+                <>
+                  <div className="flex justify-between text-slate-500 text-[11px]">
+                    <span>{t.cgst} ({halfTaxRate}%)</span>
+                    <span>₹{halfTaxAmount}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-500 text-[11px]">
+                    <span>{t.sgst} ({halfTaxRate}%)</span>
+                    <span>₹{halfTaxAmount}</span>
+                  </div>
+                </>
+              )}
+
+              {/* Grand Total Divider */}
+              <div className="border-b-2 border-slate-900 my-2" />
+
+              <div className="flex justify-between font-black text-sm text-slate-900">
+                <span>{t.totalAmount}</span>
+                <span>{formatCurrency(paymentSuccess.amount)}</span>
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div className="border-b-2 border-dashed border-slate-300 my-2" />
+
+            {/* Payment Confirmation & Status */}
+            <div className="space-y-1.5 text-center">
+              <p className="text-[11px] text-slate-600">
+                Payment Mode: <strong className="uppercase text-slate-900">{paymentSuccess.method}</strong>
+              </p>
+              <div className="inline-block px-3 py-1 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 font-extrabold text-[11px] uppercase tracking-wider">
+                {t.paymentStatusSuccessful}
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div className="border-b-2 border-dashed border-slate-300 my-2" />
+
+            {/* Footer Message */}
+            <div className="text-center text-[10px] text-slate-500 space-y-0.5 pt-1">
+              <p className="font-semibold text-slate-700">{t.thankYouMessage}</p>
+              <p className="text-[9px]">Powered by BISHOP POS</p>
+            </div>
+
           </div>
 
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 text-left space-y-2.5 text-sm">
-            <div className="flex justify-between">
-              <span className="text-slate-500">Order Reference</span>
-              <span className="font-bold text-slate-900">{paymentSuccess.orderNumber}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-500">Shop</span>
-              <span className="font-semibold text-slate-900">{shopName}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-500">Payment Mode</span>
-              <span className="font-bold text-mint-700 uppercase">{paymentSuccess.method}</span>
-            </div>
-            <div className="flex justify-between border-t border-slate-200 pt-2 font-black text-slate-900 text-base">
-              <span>Amount Paid</span>
-              <span>{formatCurrency(paymentSuccess.amount)}</span>
-            </div>
-          </div>
-
-          <a href={`/menu/${shop.id}`} className="block">
-            <Button size="lg" className="w-full">
-              Return to Menu
+          {/* Action Buttons (Hidden when printing) */}
+          <div className="p-4 bg-slate-50 border-t border-slate-200 space-y-2.5 print:hidden">
+            <Button
+              size="lg"
+              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold"
+              onClick={() => window.print()}
+            >
+              {t.printBill}
             </Button>
-          </a>
-        </Card>
+
+            <a href={`/menu/${shop.id}`} className="block">
+              <Button size="md" variant="outline" className="w-full border-slate-300 text-slate-700">
+                {t.backToMenu}
+              </Button>
+            </a>
+          </div>
+
+        </div>
       </div>
     );
   }
@@ -369,11 +523,25 @@ export default function PaymentCustomerPage({
                 className="text-3xl font-black text-slate-900 w-36 text-center bg-transparent focus:outline-none focus:border-b-2 focus:border-mint-500"
               />
             </div>
-            {tableNumber && (
-              <Badge variant="mint" className="mt-1">
-                Table / Room: {tableNumber}
+            <div className="pt-2 border-t border-slate-200/60 max-w-xs mx-auto space-y-2">
+              <Badge variant="mint" className="uppercase tracking-wider text-[10px]">
+                Order Type: Takeaway
               </Badge>
-            )}
+
+              <div className="text-left pt-1">
+                <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                  Customer Name *
+                </label>
+                <input
+                  type="text"
+                  placeholder="Enter your name"
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  className="w-full text-xs px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-900 placeholder-slate-400 focus:outline-none focus:border-mint-500"
+                  required
+                />
+              </div>
+            </div>
           </div>
 
           {/* Payment Method Selector */}

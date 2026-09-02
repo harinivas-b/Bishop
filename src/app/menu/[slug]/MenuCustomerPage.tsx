@@ -256,8 +256,8 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
       return;
     }
 
-    if (!tableNumber.trim()) {
-      toast.error("Please enter a Table / Room Number so the kitchen knows where to serve.");
+    if (!customerName.trim()) {
+      toast.error("Please enter your name.");
       return;
     }
 
@@ -268,7 +268,7 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
       order_number: orderNumber,
       customer_name: customerName.trim() || null,
       customer_phone: customerPhone.trim() || null,
-      table_number: tableNumber.trim(),
+      table_number: "Takeaway",
       status: "pending",
       subtotal,
       tax,
@@ -296,7 +296,7 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
 
         setPlacedOrder({
           orderNumber,
-          tableNumber: tableNumber.trim(),
+          tableNumber: "Takeaway",
           total,
           itemsCount: cart.length,
           createdAt: new Date().toLocaleTimeString(),
@@ -308,10 +308,9 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
 
       const supabase = createClient();
 
-      // Enforce secure database RPC (server-side price, item, quantity, & total validation)
       const { data: rpcData, error: rpcError } = await supabase.rpc("submit_customer_order", {
         p_shop_id: shop.id,
-        p_table_number: tableNumber.trim(),
+        p_table_number: "Takeaway",
         p_customer_name: customerName.trim() || null,
         p_customer_phone: customerPhone.trim() || null,
         p_payment_method: paymentMethod,
@@ -326,7 +325,7 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
 
       setPlacedOrder({
         orderNumber: rpcData.order_number,
-        tableNumber: tableNumber.trim(),
+        tableNumber: "Takeaway",
         total: rpcData.total,
         itemsCount: cart.reduce((s, i) => s + i.quantity, 0),
         createdAt: new Date().toLocaleTimeString(),
@@ -558,17 +557,9 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
                 </div>
               )}
 
-              {/* Customer Table & Contact Form */}
+              {/* Customer Contact & Parcel Order Form */}
               <div id="customer-order-form" className="space-y-3 pt-3 border-t border-slate-100">
                 <h3 className="text-xs uppercase tracking-wider font-bold text-slate-500">{t.customerDetails}</h3>
-
-                <Input
-                  label={t.tableNumberLabel}
-                  placeholder={t.tableNumberPlaceholder}
-                  value={tableNumber}
-                  onChange={(e) => setTableNumber(e.target.value)}
-                  required
-                />
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <Input
@@ -576,6 +567,7 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
                     placeholder={t.customerNamePlaceholder}
                     value={customerName}
                     onChange={(e) => setCustomerName(e.target.value)}
+                    required
                   />
                   <Input
                     label={t.customerPhoneLabel}
