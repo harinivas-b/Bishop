@@ -218,9 +218,11 @@ export default function PaymentCustomerPage({
       : amount;
 
     try {
+      let finalOrderNumber = orderNum;
+
       if (cartItems.length > 0) {
         // Submit with items via RPC
-        const { error: rpcError } = await supabase.rpc("submit_customer_order", {
+        const { data: rpcData, error: rpcError } = await supabase.rpc("submit_customer_order", {
           p_shop_id: shop.id,
           p_table_number: "Takeaway",
           p_customer_name: customerName.trim(),
@@ -251,6 +253,8 @@ export default function PaymentCustomerPage({
             });
 
           if (directErr) throw directErr;
+        } else if (rpcData && (rpcData as any).order_number) {
+          finalOrderNumber = (rpcData as any).order_number;
         }
       } else {
         // Direct payment record without menu items
@@ -278,7 +282,7 @@ export default function PaymentCustomerPage({
       }
 
       setPaymentSuccess({
-        orderNumber: orderNum,
+        orderNumber: finalOrderNumber,
         amount: computedTotal,
         subtotal: computedSubtotal,
         tax: computedTax,
