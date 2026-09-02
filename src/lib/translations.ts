@@ -12,7 +12,7 @@ export const DASHBOARD_TRANSLATIONS = {
     },
     common: {
       shopkeeper: "Shopkeeper",
-      collapse: "Collapse",
+      collapse: "Hide",
       refresh: "Refresh",
       search: "Search...",
       viewAll: "View All →",
@@ -383,7 +383,7 @@ export const DASHBOARD_TRANSLATIONS = {
     },
     common: {
       shopkeeper: "கடையாளர்",
-      collapse: "சுருக்குக",
+      collapse: "மறை",
       refresh: "புதுப்பி",
       search: "தேடுக...",
       viewAll: "அனைத்தையும் காண்க →",
