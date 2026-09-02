@@ -18,14 +18,14 @@ export async function POST(req: NextRequest) {
     const cleanName = full_name.trim();
     const cleanPhone = phone ? phone.trim() : null;
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 
-    if (!serviceKey) {
+    if (!supabaseUrl || !serviceKey || (!supabaseUrl.startsWith("http://") && !supabaseUrl.startsWith("https://"))) {
       return NextResponse.json(
         {
           error:
-            "Server Configuration Error: SUPABASE_SERVICE_ROLE_KEY is required in .env.local to create employees securely without email rate limits.",
+            "Server Configuration Error: NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables are required to create employees securely.",
         },
         { status: 500 }
       );
