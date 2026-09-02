@@ -94,6 +94,19 @@ html {
   text-rendering: optimizeLegibility;
 }
 
+/* ── Global UI Caret & Cursor Handling ──
+   Prevent text-editing cursor/caret (I-beam) when clicking normal UI text */
+body,
+h1, h2, h3, h4, h5, h6,
+p, span, div, label,
+table, th, td, tr,
+ul, ol, li,
+header, footer, main, section, nav, aside,
+svg, img {
+  caret-color: transparent;
+  cursor: default;
+}
+
 body {
   background: var(--color-surface-secondary);
   color: var(--color-text-primary);
@@ -102,6 +115,30 @@ body {
   letter-spacing: -0.01em;
   line-height: 1.6;
   min-height: 100dvh;
+}
+
+/* ── Interactive & Clickable Controls ── */
+button,
+a,
+[role="button"],
+input[type="button"],
+input[type="submit"],
+input[type="reset"],
+input[type="checkbox"],
+input[type="radio"],
+select,
+summary {
+  cursor: pointer;
+  caret-color: transparent;
+}
+
+/* ── Genuinely Editable Form Inputs & Fields ── */
+input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="checkbox"]):not([type="radio"]),
+textarea,
+[contenteditable="true"],
+[contenteditable="true"] * {
+  caret-color: var(--color-mint-600);
+  cursor: text;
 }
 
 h1,
