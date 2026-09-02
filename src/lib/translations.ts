@@ -50,7 +50,7 @@ export const DASHBOARD_TRANSLATIONS = {
       no: "No",
     },
     greetings: {
-      morning: "Good morning",
+      morning: "Hello!!",
       afternoon: "Good afternoon",
       evening: "Good evening",
       whatsHappening: "Here's what's happening at",
