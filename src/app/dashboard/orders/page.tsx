@@ -176,6 +176,34 @@ export default function OrdersPage() {
     }
   }
 
+  async function togglePaymentStatus(order: OrderWithItems) {
+    const nextPaymentStatus = order.payment_status === "paid" ? "pending" : "paid";
+
+    try {
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("orders")
+        .update({ payment_status: nextPaymentStatus })
+        .eq("id", order.id);
+
+      if (error) throw error;
+
+      setOrders((prev) =>
+        prev.map((item) =>
+          item.id === order.id ? { ...item, payment_status: nextPaymentStatus } : item
+        )
+      );
+      toast.success(
+        nextPaymentStatus === "paid"
+          ? `Order #${order.order_number} marked as Paid!`
+          : `Order #${order.order_number} marked as Pending.`
+      );
+    } catch (error) {
+      console.error("Update payment status failed:", error);
+      toast.error("Failed to update payment status");
+    }
+  }
+
   async function cancelOrder(order: OrderWithItems) {
     if (!confirm(`Cancel order #${order.order_number}?`)) return;
 
@@ -350,6 +378,23 @@ export default function OrdersPage() {
                     <span className="text-lg font-extrabold text-slate-900 tabular-nums">
                       {formatCurrency(order.total)}
                     </span>
+
+                    {order.payment_status === "pending" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-300 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 font-extrabold"
+                        onClick={() => togglePaymentStatus(order)}
+                        leftIcon={<CheckCircle className="h-4 w-4 text-emerald-600" />}
+                      >
+                        {t.markCashPaid || "Mark Cash Received"}
+                      </Button>
+                    ) : (
+                      <Badge variant="success" size="md" className="font-bold">
+                        <CheckCircle className="h-3 w-3 mr-1" />
+                        Paid
+                      </Badge>
+                    )}
 
                     {nextStatusLabel && order.status !== "delivered" && order.status !== "cancelled" && (
                       <Button

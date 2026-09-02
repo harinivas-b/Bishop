@@ -44,9 +44,12 @@ interface CartItem {
 
 interface PlacedOrderDetails {
   orderNumber: string;
-  tableNumber: string;
   total: number;
-  itemsCount: number;
+  subtotal: number;
+  tax: number;
+  customerName: string;
+  customerPhone: string;
+  cartItems: CartItem[];
   createdAt: string;
 }
 
@@ -250,6 +253,32 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
     setCart((prev) => prev.filter((item) => item.menu_item_id !== itemId));
   }
 
+  function handlePayNow() {
+    if (!cart.length) {
+      toast.error("Add items to your cart first.");
+      return;
+    }
+
+    if (!customerName.trim()) {
+      toast.error(t.nameRequiredError || "Please enter your Name before proceeding.");
+      return;
+    }
+
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(`bishop_checkout_${shop.id}`, JSON.stringify({
+        cart,
+        tableNumber: "Takeaway",
+        customerName: customerName.trim(),
+        customerPhone: customerPhone.trim(),
+        orderNotes: orderNotes.trim(),
+        subtotal,
+        tax,
+        total,
+      }));
+      window.location.href = `/pay/${shop.id}?amount=${total}&table=Takeaway`;
+    }
+  }
+
   async function submitOrder() {
     if (!cart.length) {
       toast.error("Add items to your cart first.");
@@ -263,22 +292,24 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
 
     setIsSubmitting(true);
     const orderNumber = createOrderNumber();
+    const currentCart = [...cart];
+    
     const orderPayload = {
       shop_id: shop.id,
       order_number: orderNumber,
-      customer_name: customerName.trim() || null,
+      customer_name: customerName.trim(),
       customer_phone: customerPhone.trim() || null,
       table_number: "Takeaway",
       status: "pending",
       subtotal,
       tax,
       total,
-      payment_method: paymentMethod,
-      payment_status: paymentMethod === "cash" ? "pending" : "paid",
-      notes: orderNotes.trim() || "QR Menu Order",
+      payment_method: "cash",
+      payment_status: "pending",
+      notes: orderNotes.trim() || "Takeaway Cash Order",
     };
 
-    const orderItems = cart.map((item) => ({
+    const orderItems = currentCart.map((item) => ({
       menu_item_id: item.menu_item_id,
       name: item.name,
       price: item.price,
@@ -296,10 +327,13 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
 
         setPlacedOrder({
           orderNumber,
-          tableNumber: "Takeaway",
           total,
-          itemsCount: cart.length,
-          createdAt: new Date().toLocaleTimeString(),
+          subtotal,
+          tax,
+          customerName: customerName.trim(),
+          customerPhone: customerPhone.trim(),
+          cartItems: currentCart,
+          createdAt: new Date().toLocaleString(),
         });
         setCart([]);
         toast.success("Order saved offline! It will sync when you re-connect.");
@@ -311,10 +345,10 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
       const { data: rpcData, error: rpcError } = await supabase.rpc("submit_customer_order", {
         p_shop_id: shop.id,
         p_table_number: "Takeaway",
-        p_customer_name: customerName.trim() || null,
+        p_customer_name: customerName.trim(),
         p_customer_phone: customerPhone.trim() || null,
-        p_payment_method: paymentMethod,
-        p_notes: orderNotes.trim() || "QR Menu Order",
+        p_payment_method: "cash",
+        p_notes: orderNotes.trim() || "Takeaway Cash Order",
         p_items: orderItems,
       });
 
@@ -325,13 +359,16 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
 
       setPlacedOrder({
         orderNumber: rpcData.order_number,
-        tableNumber: "Takeaway",
-        total: rpcData.total,
-        itemsCount: cart.reduce((s, i) => s + i.quantity, 0),
-        createdAt: new Date().toLocaleTimeString(),
+        total: rpcData.total || total,
+        subtotal,
+        tax,
+        customerName: customerName.trim(),
+        customerPhone: customerPhone.trim(),
+        cartItems: currentCart,
+        createdAt: new Date().toLocaleString(),
       });
       setCart([]);
-      toast.success("Order placed successfully!");
+      toast.success("Cash order confirmed!");
     } catch (error: any) {
       console.error("Submit order failed", error);
       toast.error(error?.message || "Unable to place order. Please try again.");
@@ -340,81 +377,167 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
     }
   }
 
-  function handlePayNow() {
-    if (typeof window !== "undefined") {
-      if (cart.length > 0) {
-        window.localStorage.setItem(`bishop_checkout_${shop.id}`, JSON.stringify({
-          cart,
-          tableNumber,
-          customerName,
-          customerPhone,
-          orderNotes,
-          subtotal,
-          tax,
-          total,
-        }));
-      }
-      window.location.href = `/pay/${shop.id}?amount=${total}&table=${encodeURIComponent(tableNumber)}`;
-    }
-  }
-
-  // Placed Order Success Confirmation View
+  // Placed Cash Order Digital Bill View
   if (placedOrder) {
+    const halfTaxRate = (taxRate / 2).toFixed(1);
+    const halfTaxAmount = (placedOrder.tax / 2).toFixed(2);
+    const payT = DASHBOARD_TRANSLATIONS[lang || "en"].customerPaymentPage;
+
     return (
-      <div className="min-h-dvh bg-slate-50 flex items-center justify-center p-4">
-        <Card padding="lg" className="w-full max-w-md text-center rounded-3xl space-y-6 shadow-xl">
-          <div className="h-20 w-20 bg-mint-100 rounded-full flex items-center justify-center mx-auto text-mint-600">
-            <CheckCircle2 className="h-10 w-10" />
+      <div className="min-h-dvh bg-slate-100 flex items-center justify-center p-4 py-8">
+        <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden print:border-none print:shadow-none print:w-full print:max-w-none">
+          
+          {/* Top Pending Banner */}
+          <div className="bg-amber-500 text-white p-4 text-center print:hidden flex items-center justify-center gap-2">
+            <Clock className="h-6 w-6" />
+            <span className="font-extrabold text-base uppercase tracking-wider">{t.orderPlacedTitle}</span>
           </div>
 
-          <div>
-            <Badge variant="mint" className="mb-2">
-              {placedOrder.tableNumber}
-            </Badge>
-            <h1 className="text-2xl font-bold text-slate-900">{t.orderPlacedTitle}</h1>
-            <p className="text-sm text-slate-500 mt-1">{t.orderPlacedSubtitle}</p>
+          {/* Thermal Receipt Content Container */}
+          <div id="thermal-receipt" className="p-6 font-mono text-xs text-slate-800 space-y-4 bg-white select-text">
+            
+            {/* Header: Shop Name & Info */}
+            <div className="text-center space-y-1">
+              <h1 className="text-xl font-black uppercase tracking-tight text-slate-900">{shop.name}</h1>
+              {shop.address && <p className="text-[11px] text-slate-600 leading-tight">{shop.address}</p>}
+              {shop.phone && <p className="text-[11px] text-slate-600">Ph: {shop.phone}</p>}
+              {shop.gst_number && (
+                <p className="text-[11px] font-bold text-slate-700 pt-0.5">{payT.gstin}: {shop.gst_number}</p>
+              )}
+            </div>
+
+            {/* Divider */}
+            <div className="border-b-2 border-dashed border-slate-300 my-2" />
+
+            {/* Bill Meta Details */}
+            <div className="space-y-1 text-[11px]">
+              <div className="flex justify-between">
+                <span className="text-slate-500">{payT.billNumber}:</span>
+                <span className="font-bold text-slate-900">{placedOrder.orderNumber}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">{payT.date}:</span>
+                <span>{placedOrder.createdAt}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">{payT.customerName}:</span>
+                <span className="font-bold text-slate-900">{placedOrder.customerName}</span>
+              </div>
+              {placedOrder.customerPhone && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">{payT.phone}:</span>
+                  <span>{placedOrder.customerPhone}</span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-slate-500">{payT.table}:</span>
+                <span className="font-bold text-slate-800 uppercase">Takeaway / Parcel</span>
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div className="border-b-2 border-dashed border-slate-300 my-2" />
+
+            {/* Itemized Table */}
+            <div className="space-y-2">
+              <div className="grid grid-cols-12 font-bold text-[10px] uppercase text-slate-600 border-b border-slate-200 pb-1">
+                <span className="col-span-1">#</span>
+                <span className="col-span-5">{payT.item}</span>
+                <span className="col-span-2 text-center">{payT.qty}</span>
+                <span className="col-span-2 text-right">{payT.price}</span>
+                <span className="col-span-2 text-right">Total</span>
+              </div>
+
+              {placedOrder.cartItems.map((item, idx) => (
+                <div key={idx} className="grid grid-cols-12 text-[11px] items-start py-0.5">
+                  <span className="col-span-1 text-slate-400">{idx + 1}</span>
+                  <span className="col-span-5 font-semibold text-slate-900 break-words">{item.name}</span>
+                  <span className="col-span-2 text-center font-bold">{item.quantity}</span>
+                  <span className="col-span-2 text-right text-slate-600">{item.price}</span>
+                  <span className="col-span-2 text-right font-bold text-slate-900">
+                    {(item.price * item.quantity).toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Divider */}
+            <div className="border-b-2 border-dashed border-slate-300 my-2" />
+
+            {/* Calculations Breakdown */}
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between text-slate-600">
+                <span>{payT.subtotal}</span>
+                <span>{formatCurrency(placedOrder.subtotal)}</span>
+              </div>
+
+              {taxRate > 0 && (
+                <>
+                  <div className="flex justify-between text-slate-500 text-[11px]">
+                    <span>{payT.cgst} ({halfTaxRate}%)</span>
+                    <span>₹{halfTaxAmount}</span>
+                  </div>
+                  <div className="flex justify-between text-slate-500 text-[11px]">
+                    <span>{payT.sgst} ({halfTaxRate}%)</span>
+                    <span>₹{halfTaxAmount}</span>
+                  </div>
+                </>
+              )}
+
+              {/* Grand Total Divider */}
+              <div className="border-b-2 border-slate-900 my-2" />
+
+              <div className="flex justify-between font-black text-sm text-slate-900">
+                <span>{payT.totalAmount}</span>
+                <span>{formatCurrency(placedOrder.total)}</span>
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div className="border-b-2 border-dashed border-slate-300 my-2" />
+
+            {/* Payment Mode & Status: PENDING */}
+            <div className="space-y-1.5 text-center">
+              <p className="text-[11px] text-slate-600">
+                Payment Mode: <strong className="uppercase text-slate-900">CASH</strong>
+              </p>
+              <div className="inline-block px-3 py-1 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 font-extrabold text-[11px] uppercase tracking-wider">
+                {payT.paymentStatusPending || "PAYMENT STATUS: PENDING (Pay at Counter)"}
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div className="border-b-2 border-dashed border-slate-300 my-2" />
+
+            {/* Footer Message */}
+            <div className="text-center text-[10px] text-slate-500 space-y-0.5 pt-1">
+              <p className="font-semibold text-slate-700">{payT.thankYouMessage}</p>
+              <p className="text-[9px]">Powered by BISHOP POS</p>
+            </div>
+
           </div>
 
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 text-left space-y-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-slate-500">{t.orderNumber}</span>
-              <span className="font-bold text-slate-900">{placedOrder.orderNumber}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-500">{t.table}</span>
-              <span className="font-semibold text-slate-900">{placedOrder.tableNumber}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-500">{t.status}</span>
-              <span className="font-medium text-amber-600">{t.statusPending}</span>
-            </div>
-            <div className="flex justify-between border-t border-slate-200 pt-2 font-bold text-slate-900">
-              <span>{t.total} ({placedOrder.itemsCount} items)</span>
-              <span>{formatCurrency(placedOrder.total)}</span>
-            </div>
-          </div>
-
-          <div className="space-y-3 pt-2">
+          {/* Action Buttons */}
+          <div className="p-4 bg-slate-50 border-t border-slate-200 space-y-2.5 print:hidden">
             <Button
               size="lg"
-              className="w-full bg-gradient-to-r from-mint-600 to-emerald-600 text-white font-bold"
-              onClick={handlePayNow}
-              rightIcon={<ArrowRight className="h-4 w-4" />}
+              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold"
+              onClick={() => window.print()}
             >
-              PAY NOW ({formatCurrency(placedOrder.total)})
+              {payT.printBill}
             </Button>
+
             <Button
-              size="lg"
+              size="md"
               variant="outline"
-              className="w-full"
-              onClick={() => {
-                setPlacedOrder(null);
-              }}
+              className="w-full border-slate-300 text-slate-700"
+              onClick={() => setPlacedOrder(null)}
             >
               {t.placeAnother}
             </Button>
           </div>
-        </Card>
+
+        </div>
       </div>
     );
   }
@@ -619,10 +742,10 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
                   onClick={submitOrder}
                   disabled={isSubmitting || cart.length === 0}
                   variant="outline"
-                  className="w-full border-slate-200 text-slate-700 font-semibold touch-manipulation"
+                  className="w-full border-slate-300 text-slate-800 font-extrabold touch-manipulation hover:bg-slate-50"
                   size="md"
                 >
-                  {isSubmitting ? t.placingOrder : "Place Order (Pay Later / Cash)"}
+                  {isSubmitting ? t.placingOrder : (t.confirmCashOrder || "CONFIRM CASH ORDER")}
                 </Button>
               </div>
             </Card>

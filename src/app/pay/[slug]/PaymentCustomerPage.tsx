@@ -18,6 +18,7 @@ import {
   Building2,
   QrCode,
   Languages,
+  Clock,
 } from "lucide-react";
 import type { Shop } from "@/lib/types";
 import { formatCurrency, getShopPaymentQr, getShopUpiId, getShopBankDetails } from "@/lib/utils";
@@ -68,6 +69,7 @@ export default function PaymentCustomerPage({
     subtotal: number;
     tax: number;
     method: string;
+    paymentStatus: "paid" | "pending";
     customerName: string;
     customerPhone: string;
     cartItems: DraftCartItem[];
@@ -281,12 +283,13 @@ export default function PaymentCustomerPage({
         subtotal: computedSubtotal,
         tax: computedTax,
         method,
+        paymentStatus: status,
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim(),
         cartItems,
         createdAt: new Date().toLocaleString(),
       });
-      toast.success("Payment recorded successfully!");
+      toast.success(status === "pending" ? "Cash order placed! Pay at counter." : "Payment recorded successfully!");
     } catch (err: any) {
       console.error("Payment submission error:", err);
       toast.error(err?.message || "Error submitting payment. Please alert shop staff.");
@@ -300,16 +303,24 @@ export default function PaymentCustomerPage({
     const taxRate = shop.tax_rate || 0;
     const halfTaxRate = (taxRate / 2).toFixed(1);
     const halfTaxAmount = (paymentSuccess.tax / 2).toFixed(2);
+    const isPending = paymentSuccess.paymentStatus === "pending" || paymentSuccess.method === "cash";
 
     return (
       <div className="min-h-dvh bg-slate-100 flex items-center justify-center p-4 py-8">
         <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden print:border-none print:shadow-none print:w-full print:max-w-none">
           
-          {/* Top Success Banner */}
-          <div className="bg-emerald-600 text-white p-4 text-center print:hidden flex items-center justify-center gap-2">
-            <CheckCircle2 className="h-6 w-6" />
-            <span className="font-extrabold text-base uppercase tracking-wider">{t.paymentSuccess}</span>
-          </div>
+          {/* Top Banner */}
+          {isPending ? (
+            <div className="bg-amber-500 text-white p-4 text-center print:hidden flex items-center justify-center gap-2">
+              <Clock className="h-6 w-6" />
+              <span className="font-extrabold text-base uppercase tracking-wider">Cash Order Confirmed - Pay at Counter</span>
+            </div>
+          ) : (
+            <div className="bg-emerald-600 text-white p-4 text-center print:hidden flex items-center justify-center gap-2">
+              <CheckCircle2 className="h-6 w-6" />
+              <span className="font-extrabold text-base uppercase tracking-wider">{t.paymentSuccess}</span>
+            </div>
+          )}
 
           {/* Thermal Receipt Content Container */}
           <div id="thermal-receipt" className="p-6 font-mono text-xs text-slate-800 space-y-4 bg-white select-text">
@@ -426,9 +437,15 @@ export default function PaymentCustomerPage({
               <p className="text-[11px] text-slate-600">
                 Payment Mode: <strong className="uppercase text-slate-900">{paymentSuccess.method}</strong>
               </p>
-              <div className="inline-block px-3 py-1 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 font-extrabold text-[11px] uppercase tracking-wider">
-                {t.paymentStatusSuccessful}
-              </div>
+              {paymentSuccess.paymentStatus === "pending" || paymentSuccess.method === "cash" ? (
+                <div className="inline-block px-3 py-1 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 font-extrabold text-[11px] uppercase tracking-wider">
+                  {t.paymentStatusPending || "PAYMENT STATUS: PENDING (Pay at Counter)"}
+                </div>
+              ) : (
+                <div className="inline-block px-3 py-1 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 font-extrabold text-[11px] uppercase tracking-wider">
+                  {t.paymentStatusSuccessful}
+                </div>
+              )}
             </div>
 
             {/* Divider */}
