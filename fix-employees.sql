@@ -1,0 +1,13 @@
+-- ==========================================
+-- NOTICE: THIS FILE HAS BEEN DEPRECATED
+-- ==========================================
+-- The policies previously in this file caused an infinite loop (`42P17`) 
+-- because they made `profiles` depend on `shops`, while `shops` depended on `profiles`.
+-- 
+-- ALL RLS recursion fixes, including the correct `SECURITY DEFINER` function
+-- to safely query employee profiles without triggering loops, have been combined 
+-- into the updated `fix-database.sql` file.
+-- 
+-- ACTION REQUIRED:
+-- Please run the `fix-database.sql` script in your Supabase SQL Editor to apply
+-- the correct, non-recursive RLS policies for both `shops` and `profiles`.
