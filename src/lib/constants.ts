@@ -21,7 +21,9 @@ export type UserRole = (typeof ROLES)[keyof typeof ROLES];
  */
 export const ORDER_STATUS = {
   PENDING: "pending",
+  PENDING_PAYMENT: "pending_payment",
   CONFIRMED: "confirmed",
+  PAID: "paid",
   PREPARING: "preparing",
   READY: "ready",
   DELIVERED: "delivered",
@@ -38,6 +40,8 @@ export const PAYMENT_METHODS = {
   UPI: "upi",
   CARD: "card",
   RAZORPAY: "razorpay",
+  PRE_ORDER: "pre_order",
+  PAY_AT_COUNTER: "pay_at_counter",
 } as const;
 
 export type PaymentMethod =

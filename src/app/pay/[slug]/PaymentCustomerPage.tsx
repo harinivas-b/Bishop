@@ -19,11 +19,14 @@ import {
   QrCode,
   Languages,
   Clock,
+  Camera,
+  Loader2,
 } from "lucide-react";
 import type { Shop } from "@/lib/types";
-import { formatCurrency, getShopPaymentQr, getShopUpiId, getShopBankDetails } from "@/lib/utils";
+import { formatCurrency, getShopPaymentQr, getShopUpiId, getShopBankDetails, getItemEmoji } from "@/lib/utils";
 import { useLanguageStore } from "@/stores/language-store";
 import { DASHBOARD_TRANSLATIONS } from "@/lib/translations";
+import { captureBillScreenshot } from "@/lib/screenshot";
 
 interface PaymentCustomerPageProps {
   shop: Shop;
@@ -63,17 +66,21 @@ export default function PaymentCustomerPage({
   const [paymentMethod, setPaymentMethod] = useState<"upi" | "cash" | "razorpay">("upi");
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState<{
     orderNumber: string;
     amount: number;
     subtotal: number;
     tax: number;
     method: string;
-    paymentStatus: "paid" | "pending";
+    paymentStatus: "paid" | "pending" | "partially_paid";
     customerName: string;
     customerPhone: string;
     cartItems: DraftCartItem[];
     createdAt: string;
+    isPreOrder?: boolean;
+    advanceAmount?: number;
+    remainingAmount?: number;
   } | null>(null);
 
   // Check if Razorpay is configured in environment
@@ -205,6 +212,7 @@ export default function PaymentCustomerPage({
     const orderNum = `BISHOP-${Math.floor(Date.now() / 1000).toString().slice(-4)}-${Math.floor(
       Math.random() * 900 + 100
     )}`;
+    const tokenNumber = `BSH-${Math.floor(Math.random() * 9000 + 1000)}`;
 
     const taxRate = shop.tax_rate || 0;
     const computedSubtotal = cartItems.length > 0
@@ -217,63 +225,149 @@ export default function PaymentCustomerPage({
       ? Number((computedSubtotal + computedTax).toFixed(2))
       : amount;
 
-    try {
-      let finalOrderNumber = orderNum;
+    const isPreOrder = method === "cash" || method === "pre_order";
+    const advanceAmount = isPreOrder ? Number((computedTotal * 0.5).toFixed(2)) : computedTotal;
+    const remainingAmount = isPreOrder ? Number((computedTotal - advanceAmount).toFixed(2)) : 0;
+    const finalPaymentStatus = isPreOrder ? "partially_paid" : status;
+    const finalPaymentMethod = isPreOrder ? "pre_order" : method;
 
+    try {
+      // Pre-validate stock for items
       if (cartItems.length > 0) {
-        // Submit with items via RPC
-        const { data: rpcData, error: rpcError } = await supabase.rpc("submit_customer_order", {
-          p_shop_id: shop.id,
-          p_table_number: "Takeaway",
-          p_customer_name: customerName.trim(),
-          p_customer_phone: customerPhone.trim() || null,
-          p_payment_method: method,
-          p_notes: `Takeaway Payment via ${method.toUpperCase()}`,
-          p_items: cartItems,
+        const { data: invRecords } = await supabase
+          .from("inventory")
+          .select("*")
+          .eq("shop_id", shop.id);
+
+        const invMap = new Map<string, { id: string; quantity: number }>();
+        (invRecords || []).forEach((inv: any) => {
+          if (inv.name) {
+            invMap.set(inv.name.trim().toLowerCase(), { id: inv.id, quantity: inv.quantity ?? 0 });
+          }
         });
 
-        if (rpcError) {
-          console.warn("RPC failed, inserting order directly:", rpcError);
-          // Direct fallback insert
-          const { error: directErr } = await supabase
-            .from("orders")
-            .insert({
-              shop_id: shop.id,
-              order_number: orderNum,
-              customer_name: customerName.trim(),
-              customer_phone: customerPhone.trim() || null,
-              table_number: "Takeaway",
-              status: "pending",
-              subtotal: computedSubtotal,
-              tax: computedTax,
-              total: computedTotal,
-              payment_method: method,
-              payment_status: status,
-              notes: `Takeaway Payment via ${method.toUpperCase()}`,
-            });
+        for (const item of cartItems) {
+          const key = item.name.trim().toLowerCase();
+          if (invMap.has(key)) {
+            const inv = invMap.get(key)!;
+            if (inv.quantity < item.quantity) {
+              toast.error(`Insufficient stock for "${item.name}". Available: ${inv.quantity}, Requested: ${item.quantity}`);
+              setIsSubmitting(false);
+              return;
+            }
+          }
+        }
+      }
 
-          if (directErr) throw directErr;
-        } else if (rpcData && (rpcData as any).order_number) {
-          finalOrderNumber = (rpcData as any).order_number;
+      let finalOrderNumber = tokenNumber;
+
+      if (cartItems.length > 0) {
+        const numericToken = Number(tokenNumber.replace(/\D/g, "")) || Math.floor(10000 + Math.random() * 90000);
+        const generatedOrderId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `ord_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        let createdOrderId: string = generatedOrderId;
+        finalOrderNumber = `BSH-${numericToken}`;
+
+        // Direct insert to ensure all pre-order columns (advance_amount, remaining_amount, is_pre_order) are recorded
+        const { error: directErr } = await supabase
+          .from("orders")
+          .insert({
+            id: generatedOrderId,
+            shop_id: shop.id,
+            order_number: orderNum,
+            token_number: numericToken,
+            customer_name: customerName.trim(),
+            customer_phone: customerPhone.trim() || null,
+            table_number: "Takeaway",
+            subtotal: computedSubtotal,
+            tax: computedTax,
+            total: computedTotal,
+            grand_total: computedTotal,
+            advance_amount: advanceAmount,
+            remaining_amount: remainingAmount,
+            is_pre_order: isPreOrder,
+            payment_method: finalPaymentMethod,
+            payment_status: finalPaymentStatus,
+            notes: isPreOrder
+              ? `Pre-Order 50% Advance (Paid ${formatCurrency(advanceAmount)}, Remaining ${formatCurrency(remainingAmount)})`
+              : `Takeaway Payment via ${method.toUpperCase()}`,
+          });
+
+        if (directErr) throw directErr;
+
+        const itemInserts = cartItems.map((item) => ({
+          order_id: createdOrderId,
+          product_id: item.menu_item_id,
+          product_name: item.name,
+          unit_price: item.price,
+          quantity: item.quantity,
+          line_total: Number((item.price * item.quantity).toFixed(2)),
+          notes: item.notes?.trim() || null,
+        }));
+
+        await supabase.from("order_items").insert(itemInserts);
+
+        // Deduct inventory stock
+        const { data: latestInv } = await supabase
+          .from("inventory")
+          .select("*")
+          .eq("shop_id", shop.id);
+
+        const latestInvMap = new Map<string, { id: string; quantity: number }>();
+        (latestInv || []).forEach((inv: any) => {
+          if (inv.name) {
+            latestInvMap.set(inv.name.trim().toLowerCase(), { id: inv.id, quantity: inv.quantity ?? 0 });
+          }
+        });
+
+        for (const item of cartItems) {
+          const key = item.name.trim().toLowerCase();
+          if (latestInvMap.has(key)) {
+            const inv = latestInvMap.get(key)!;
+            const newQty = Math.max(0, inv.quantity - item.quantity);
+
+            await supabase
+              .from("inventory")
+              .update({ quantity: newQty, updated_at: new Date().toISOString() })
+              .eq("id", inv.id);
+
+            if (newQty === 0) {
+              await supabase
+                .from("menu_items")
+                .update({ is_available: false, updated_at: new Date().toISOString() })
+                .eq("id", item.menu_item_id);
+            }
+          }
         }
       } else {
         // Direct payment record without menu items
-        const { error: directErr } = await supabase.from("orders").insert({
-          shop_id: shop.id,
-          order_number: orderNum,
-          customer_name: customerName.trim(),
-          customer_phone: customerPhone.trim() || null,
-          table_number: "Takeaway",
-          status: "pending",
-          subtotal: computedSubtotal,
-          tax: computedTax,
-          total: computedTotal,
-          payment_method: method,
-          payment_status: status,
-          notes: `Takeaway Payment via ${method.toUpperCase()}`,
-        });
+        const { data: createdOrder, error: directErr } = await supabase
+          .from("orders")
+          .insert({
+            shop_id: shop.id,
+            order_number: orderNum,
+            token_number: tokenNumber,
+            customer_name: customerName.trim(),
+            customer_phone: customerPhone.trim() || null,
+            table_number: "Takeaway",
+            status: "pending",
+            subtotal: computedSubtotal,
+            tax: computedTax,
+            total: computedTotal,
+            grand_total: computedTotal,
+            advance_amount: advanceAmount,
+            remaining_amount: remainingAmount,
+            is_pre_order: isPreOrder,
+            payment_method: finalPaymentMethod,
+            payment_status: finalPaymentStatus,
+            notes: isPreOrder
+              ? `Pre-Order 50% Advance (Paid ${formatCurrency(advanceAmount)}, Remaining ${formatCurrency(remainingAmount)})`
+              : `Takeaway Payment via ${method.toUpperCase()}`,
+          })
+          .select("token_number")
+          .single();
 
         if (directErr) throw directErr;
+        if (createdOrder?.token_number) finalOrderNumber = createdOrder.token_number;
       }
 
       // Clear draft cart
@@ -286,14 +380,24 @@ export default function PaymentCustomerPage({
         amount: computedTotal,
         subtotal: computedSubtotal,
         tax: computedTax,
-        method,
-        paymentStatus: status,
+        method: finalPaymentMethod,
+        paymentStatus: finalPaymentStatus as any,
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim(),
         cartItems,
         createdAt: new Date().toLocaleString(),
+        isPreOrder,
+        advanceAmount,
+        remainingAmount,
       });
-      toast.success(status === "pending" ? "Cash order placed! Pay at counter." : "Payment recorded successfully!");
+
+      if (isPreOrder) {
+        toast.success(`Pre-Order Confirmed! 50% advance (${formatCurrency(advanceAmount)}) recorded.`);
+      } else if (status === "pending") {
+        toast.success("Cash order placed! Pay at counter.");
+      } else {
+        toast.success("Payment recorded successfully!");
+      }
     } catch (err: any) {
       console.error("Payment submission error:", err);
       toast.error(err?.message || "Error submitting payment. Please alert shop staff.");
@@ -309,12 +413,41 @@ export default function PaymentCustomerPage({
     const halfTaxAmount = (paymentSuccess.tax / 2).toFixed(2);
     const isPending = paymentSuccess.paymentStatus === "pending" || paymentSuccess.method === "cash";
 
+    async function handleTakeScreenshot() {
+      console.log("[Screenshot] 1. Take Screenshot button clicked");
+      if (isCapturingScreenshot) {
+        console.log("[Screenshot] Capture already in progress, ignoring duplicate click");
+        return;
+      }
+      setIsCapturingScreenshot(true);
+      try {
+        await captureBillScreenshot(
+          "thermal-receipt",
+          `BISHOP_Bill_${paymentSuccess?.orderNumber || "Receipt"}.png`
+        );
+        toast.success("Screenshot saved successfully!");
+      } catch (err: any) {
+        console.error("[Screenshot] Screenshot error message:", err?.message || String(err));
+        console.error("[Screenshot] Screenshot error stack:", err?.stack || "No stack trace");
+        toast.error("Failed to capture screenshot: " + (err?.message || "Unknown error"));
+      } finally {
+        setIsCapturingScreenshot(false);
+      }
+    }
+
     return (
       <div className="min-h-dvh bg-slate-100 flex items-center justify-center p-4 py-8">
         <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden print:border-none print:shadow-none print:w-full print:max-w-none">
           
           {/* Top Banner */}
-          {isPending ? (
+          {paymentSuccess.isPreOrder ? (
+            <div className="bg-emerald-600 text-white p-4 text-center print:hidden flex items-center justify-center gap-2">
+              <CheckCircle2 className="h-6 w-6" />
+              <span className="font-extrabold text-base uppercase tracking-wider">
+                Pre-Order Confirmed — 50% Advance Paid
+              </span>
+            </div>
+          ) : isPending ? (
             <div className="bg-amber-500 text-white p-4 text-center print:hidden flex items-center justify-center gap-2">
               <Clock className="h-6 w-6" />
               <span className="font-extrabold text-base uppercase tracking-wider">Cash Order Confirmed - Pay at Counter</span>
@@ -364,7 +497,9 @@ export default function PaymentCustomerPage({
               )}
               <div className="flex justify-between">
                 <span className="text-slate-500">{t.table}:</span>
-                <span className="font-bold text-slate-800 uppercase">Takeaway / Parcel</span>
+                <span className="font-bold text-slate-800 uppercase">
+                  {paymentSuccess.isPreOrder ? "Pre-Order (50% Advance)" : "Takeaway / Parcel"}
+                </span>
               </div>
             </div>
 
@@ -385,7 +520,14 @@ export default function PaymentCustomerPage({
                 {paymentSuccess.cartItems.map((item, idx) => (
                   <div key={idx} className="grid grid-cols-12 text-[11px] items-start py-0.5">
                     <span className="col-span-1 text-slate-400">{idx + 1}</span>
-                    <span className="col-span-5 font-semibold text-slate-900 break-words">{item.name}</span>
+                    <span className="col-span-5 font-semibold text-slate-900 break-words flex items-center gap-1">
+                      {getItemEmoji(item.name) && (
+                        <span className="text-xs leading-none shrink-0" aria-hidden="true">
+                          {getItemEmoji(item.name)}
+                        </span>
+                      )}
+                      <span>{item.name}</span>
+                    </span>
                     <span className="col-span-2 text-center font-bold">{item.quantity}</span>
                     <span className="col-span-2 text-right text-slate-600">{item.price}</span>
                     <span className="col-span-2 text-right font-bold text-slate-900">
@@ -431,6 +573,19 @@ export default function PaymentCustomerPage({
                 <span>{t.totalAmount}</span>
                 <span>{formatCurrency(paymentSuccess.amount)}</span>
               </div>
+
+              {paymentSuccess.isPreOrder && paymentSuccess.advanceAmount !== undefined && (
+                <div className="pt-2 space-y-1 border-t border-slate-200 mt-2">
+                  <div className="flex justify-between font-bold text-emerald-700 text-xs">
+                    <span>{t.advancePaid || "Advance Paid (50%)"}</span>
+                    <span>{formatCurrency(paymentSuccess.advanceAmount)}</span>
+                  </div>
+                  <div className="flex justify-between font-bold text-slate-800 text-xs">
+                    <span>{t.remainingBalance || "Remaining at Collection"}</span>
+                    <span>{formatCurrency(paymentSuccess.remainingAmount || 0)}</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Divider */}
@@ -441,7 +596,11 @@ export default function PaymentCustomerPage({
               <p className="text-[11px] text-slate-600">
                 Payment Mode: <strong className="uppercase text-slate-900">{paymentSuccess.method}</strong>
               </p>
-              {paymentSuccess.paymentStatus === "pending" || paymentSuccess.method === "cash" ? (
+              {paymentSuccess.isPreOrder ? (
+                <div className="inline-block px-3 py-1 bg-emerald-50 border border-emerald-300 rounded-lg text-emerald-900 font-extrabold text-[11px] uppercase tracking-wider">
+                  PRE-ORDER: 50% ADVANCE PAID (PAY {formatCurrency(paymentSuccess.remainingAmount || 0)} ON COLLECTION)
+                </div>
+              ) : paymentSuccess.paymentStatus === "pending" || paymentSuccess.method === "cash" ? (
                 <div className="inline-block px-3 py-1 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 font-extrabold text-[11px] uppercase tracking-wider">
                   {t.paymentStatusPending || "PAYMENT STATUS: PENDING (Pay at Counter)"}
                 </div>
@@ -463,14 +622,16 @@ export default function PaymentCustomerPage({
 
           </div>
 
-          {/* Action Buttons (Hidden when printing) */}
+          {/* Action Buttons */}
           <div className="p-4 bg-slate-50 border-t border-slate-200 space-y-2.5 print:hidden">
             <Button
               size="lg"
               className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold"
-              onClick={() => window.print()}
+              onClick={handleTakeScreenshot}
+              disabled={isCapturingScreenshot}
+              leftIcon={isCapturingScreenshot ? <Loader2 className="h-5 w-5 animate-spin" /> : <Camera className="h-5 w-5" />}
             >
-              {t.printBill}
+              {isCapturingScreenshot ? "Capturing..." : (t.takeScreenshot || "Take Screenshot")}
             </Button>
 
             <a href={`/menu/${shop.id}`} className="block">
@@ -595,7 +756,7 @@ export default function PaymentCustomerPage({
                 }`}
               >
                 <Banknote className="h-6 w-6 text-emerald-600 shrink-0" />
-                <span className="text-xs font-bold uppercase tracking-wider">Cash at Counter</span>
+                <span className="text-xs font-bold uppercase tracking-wider">Pre-Order</span>
               </button>
 
               {isRazorpayAvailable && (
@@ -725,26 +886,56 @@ export default function PaymentCustomerPage({
             </div>
           )}
 
-          {/* Cash Payment Content */}
+          {/* Pre-Order 50% Advance Payment Content */}
           {paymentMethod === "cash" && (
             <div className="space-y-4 pt-2 border-t border-slate-100 text-center">
-              <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100 text-emerald-900 space-y-2">
-                <Banknote className="h-8 w-8 text-emerald-600 mx-auto" />
-                <p className="text-sm font-bold">Pay Cash at Counter</p>
-                <p className="text-xs text-emerald-700">
-                  Please hand over {formatCurrency(amount)} in cash to the cashier at {shopName}.
-                </p>
-              </div>
+              {(() => {
+                const advanceAmount = Number((amount * 0.5).toFixed(2));
+                const remainingAmount = Number((amount - advanceAmount).toFixed(2));
 
-              <Button
-                onClick={() => recordOrder("pending", "cash")}
-                disabled={isSubmitting || amount <= 0}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-3 shadow-md"
-                size="lg"
-                leftIcon={<CheckCircle2 className="h-5 w-5" />}
-              >
-                Confirm Cash Order ({formatCurrency(amount)})
-              </Button>
+                return (
+                  <>
+                    <div className="p-4 bg-emerald-50/80 rounded-2xl border border-emerald-200 text-emerald-950 space-y-3 text-left">
+                      <div className="flex items-center gap-2">
+                        <Banknote className="h-6 w-6 text-emerald-600 shrink-0" />
+                        <h3 className="text-sm font-extrabold uppercase tracking-wide text-emerald-900">
+                          Pre-Order (50% Advance Required)
+                        </h3>
+                      </div>
+                      
+                      <p className="text-xs font-bold text-emerald-800 bg-emerald-100/90 p-2.5 rounded-xl border border-emerald-200">
+                        {t.advanceNotice || "50% advance payment required to place the pre-order."}
+                      </p>
+
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <div className="bg-white p-3 rounded-xl border border-emerald-300 shadow-xs space-y-0.5">
+                          <span className="text-[10px] uppercase font-bold text-slate-400 block">Pay Now (50%)</span>
+                          <span className="text-base font-black text-emerald-700">{formatCurrency(advanceAmount)}</span>
+                        </div>
+
+                        <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs space-y-0.5">
+                          <span className="text-[10px] uppercase font-bold text-slate-400 block">On Collection</span>
+                          <span className="text-base font-black text-slate-800">{formatCurrency(remainingAmount)}</span>
+                        </div>
+                      </div>
+
+                      <p className="text-[11px] font-medium text-slate-600 italic pt-0.5">
+                        Pay {formatCurrency(remainingAmount)} when collecting the order at {shopName}.
+                      </p>
+                    </div>
+
+                    <Button
+                      onClick={() => recordOrder("pending", "cash")}
+                      disabled={isSubmitting || amount <= 0}
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold py-3 shadow-md active:scale-[0.99] touch-manipulation"
+                      size="lg"
+                      leftIcon={<CheckCircle2 className="h-5 w-5" />}
+                    >
+                      {isSubmitting ? "Placing Pre-Order..." : `Confirm Pre-Order (Pay ${formatCurrency(advanceAmount)} Advance Now)`}
+                    </Button>
+                  </>
+                );
+              })()}
             </div>
           )}
 

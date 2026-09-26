@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
@@ -58,28 +59,58 @@ export function Sidebar({
           isCollapsed ? "justify-center" : "gap-2.5"
         )}
       >
-        <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-mint-500 to-mint-600 flex items-center justify-center shadow-md shadow-mint-500/30 shrink-0">
-          <span className="text-white font-bold text-lg drop-shadow-sm">
-            {shop?.name ? shop.name.charAt(0).toUpperCase() : "B"}
-          </span>
-        </div>
-        {!isCollapsed && (
-          <div className="flex-1 min-w-0 flex flex-col justify-center">
-            <p className="text-[17px] font-black tracking-tight bg-gradient-to-r from-slate-900 to-slate-700 bg-clip-text text-transparent truncate leading-tight">
-              {shop?.name || "BISHOP"}
-            </p>
-            <div className="flex items-center gap-1.5 mt-0.5">
-               <div className="h-1.5 w-1.5 rounded-full bg-mint-500 shadow-[0_0_8px_rgba(34,197,164,0.8)] animate-pulse" />
-               <p className="text-[11px] font-bold text-mint-600 truncate uppercase tracking-widest leading-none">
-                 {t.common.shopkeeper}
-               </p>
-            </div>
+        <Link href="/dashboard" className="flex items-center gap-2.5 group overflow-hidden">
+          <div style={{ perspective: 1000 }} className="shrink-0">
+            <motion.div
+              animate={{
+                rotateY: [0, 360],
+                filter: [
+                  "brightness(1) drop-shadow(0 4px 6px rgba(16, 185, 129, 0.25))",
+                  "brightness(0.92) drop-shadow(0 2px 4px rgba(16, 185, 129, 0.15))",
+                  "brightness(1) drop-shadow(0 4px 6px rgba(16, 185, 129, 0.25))",
+                  "brightness(0.92) drop-shadow(0 2px 4px rgba(16, 185, 129, 0.15))",
+                  "brightness(1) drop-shadow(0 4px 6px rgba(16, 185, 129, 0.25))",
+                ],
+              }}
+              transition={{
+                duration: 12,
+                repeat: Infinity,
+                ease: "linear",
+              }}
+              style={{ transformStyle: "preserve-3d" }}
+              className="motion-reduce:animate-none motion-reduce:transform-none shrink-0"
+            >
+              <Image
+                src="/bishop-logo.webp"
+                alt="BISHOP"
+                width={36}
+                height={36}
+                className="h-9 w-auto object-contain shrink-0"
+                priority
+              />
+            </motion.div>
           </div>
-        )}
+          {!isCollapsed && (
+            <div className="flex-1 min-w-0 flex flex-col justify-center">
+              <p
+                className="text-lg font-black tracking-tight text-emerald-500 truncate leading-tight group-hover:text-emerald-400 transition-colors"
+                style={{ fontFamily: "'Arial Black', sans-serif" }}
+              >
+                {shop?.name || "BISHOP"}
+              </p>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(34,197,164,0.8)] animate-pulse" />
+                <p className="text-[11px] font-extrabold text-emerald-600 truncate uppercase tracking-widest leading-none">
+                  {t.common.shopkeeper}
+                </p>
+              </div>
+            </div>
+          )}
+        </Link>
         {/* Mobile close */}
         <button
           onClick={onClose}
-          className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+          className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors ml-auto"
         >
           <X className="h-4 w-4" />
         </button>

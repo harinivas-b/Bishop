@@ -107,11 +107,13 @@ export default function InventoryPage() {
 
     try {
       const supabase = createClient();
+      const newQty = parseFloat(form.quantity) || 0;
+      const itemName = form.name.trim();
       const payload = {
         shop_id: shop.id,
-        name: form.name.trim(),
+        name: itemName,
         unit: form.unit,
-        quantity: parseFloat(form.quantity) || 0,
+        quantity: newQty,
         min_quantity: parseFloat(form.min_quantity) || 0,
         cost_per_unit: parseFloat(form.cost_per_unit) || 0,
         supplier: form.supplier.trim() || null,
@@ -133,6 +135,16 @@ export default function InventoryPage() {
         toast.success("Item added to inventory");
       }
 
+      // Sync menu_items table availability
+      await supabase
+        .from("menu_items")
+        .update({
+          is_available: newQty > 0,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("shop_id", shop.id)
+        .ilike("name", itemName);
+
       setShowModal(false);
       setForm(emptyForm);
       setEditingItem(null);
@@ -146,6 +158,7 @@ export default function InventoryPage() {
   }
 
   async function handleRestock(item: InventoryItem) {
+    if (!shop) return;
     const qty = prompt(`Restock "${item.name}"?\nEnter quantity to add:`);
     if (!qty || isNaN(Number(qty))) return;
 
@@ -161,6 +174,16 @@ export default function InventoryPage() {
         .eq("id", item.id);
 
       if (error) throw error;
+
+      // Sync menu_items table availability
+      await supabase
+        .from("menu_items")
+        .update({
+          is_available: newQty > 0,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("shop_id", shop.id)
+        .ilike("name", item.name);
 
       setItems((prev) =>
         prev.map((i) =>

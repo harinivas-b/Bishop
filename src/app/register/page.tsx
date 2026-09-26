@@ -10,6 +10,7 @@ import { motion } from "framer-motion";
 import { Mail, Lock, Eye, EyeOff, User, ArrowRight, ArrowLeft, Languages } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
+import Image from "next/image";
 import { useLanguageStore } from "@/stores/language-store";
 import { DASHBOARD_TRANSLATIONS } from "@/lib/translations";
 
@@ -158,14 +159,16 @@ export default function RegisterPage() {
             initial={{ scale: 0.8 }}
             animate={{ scale: 1 }}
             transition={{ type: "spring", stiffness: 200, damping: 15 }}
-            className="inline-flex items-center gap-3 mb-4"
+            className="inline-flex items-center justify-center mb-4"
           >
-            <div className="h-14 w-14 rounded-2xl bg-mint-500 flex items-center justify-center shadow-lg shadow-mint-500/25">
-              <span className="text-white font-extrabold text-2xl">B</span>
-            </div>
-            <span className="text-5xl font-extrabold text-slate-900 tracking-tight">
-              BISHOP
-            </span>
+            <Image
+              src="/bishop-logo.webp"
+              alt="BISHOP"
+              width={56}
+              height={56}
+              className="h-14 w-auto object-contain drop-shadow-xs"
+              priority
+            />
           </motion.div>
           <br />
           <div className="soft-pill inline-flex items-center rounded-full px-4 py-1.5 text-base font-semibold mb-5 mt-2">

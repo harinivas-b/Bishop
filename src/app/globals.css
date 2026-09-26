@@ -311,6 +311,17 @@ small {
   100% { transform: translateY(-50%); }
 }
 
+@keyframes scroll-horizontal {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+
+@keyframes dash-flow {
+  to {
+    stroke-dashoffset: -40;
+  }
+}
+
 .animate-scroll-down {
   animation: scroll-down 30s linear infinite;
   will-change: transform;
@@ -319,6 +330,19 @@ small {
 .animate-scroll-up {
   animation: scroll-up 30s linear infinite;
   will-change: transform;
+}
+
+.animate-scroll-horizontal {
+  animation: scroll-horizontal 35s linear infinite;
+  will-change: transform;
+}
+
+.animate-scroll-horizontal:hover {
+  animation-play-state: paused;
+}
+
+.animate-dash-flow {
+  animation: dash-flow 2s linear infinite;
 }
 
 /* ── Tamil Language Typography & Font Support ── */

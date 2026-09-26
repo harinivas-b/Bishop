@@ -36,6 +36,7 @@ import { toast } from "sonner";
 import type { Employee, Profile, EmployeeTask } from "@/lib/types";
 import { DASHBOARD_TRANSLATIONS } from "@/lib/translations";
 import { useLanguageStore } from "@/stores/language-store";
+import { assignTaskWithNotification } from "@/lib/task-service";
 
 interface EmployeeWithProfile extends Employee {
   profile: Profile;
@@ -76,6 +77,12 @@ export default function EmployeesPage() {
     role: "staff",
     salary: "",
   });
+
+  // Stock Checklist State for Task Assignment
+  const [shopStockItems, setShopStockItems] = useState<any[]>([]);
+  const [selectedItemsState, setSelectedItemsState] = useState<Record<string, { checked: boolean; quantity: string }>>({});
+  const [isLoadingStockItems, setIsLoadingStockItems] = useState(false);
+  const [targetEmployeeId, setTargetEmployeeId] = useState<string>("");
 
   // Assign Task Form & List State
   const [taskForm, setTaskForm] = useState({
@@ -228,87 +235,112 @@ export default function EmployeesPage() {
     }
   }
 
-  // 3. ASSIGN TASK
+  // 3. ASSIGN TASK WITH STOCK CHECKLIST
   async function openTaskModal(emp: EmployeeWithProfile) {
     setSelectedTaskEmp(emp);
+    setTargetEmployeeId(emp.id);
     setTaskForm({ title: "", description: "", priority: "medium", due_date: "" });
+    setSelectedItemsState({});
     setOpenMenuEmpId(null);
 
-    // Fetch existing tasks assigned to this employee
     if (shop) {
       setIsLoadingTasks(true);
+      setIsLoadingStockItems(true);
       try {
-        const supabase = createClient();
-        const { data, error } = await supabase
-          .from("employee_tasks")
-          .select("*")
-          .eq("shop_id", shop.id)
-          .eq("employee_id", emp.id)
-          .order("created_at", { ascending: false });
+        const [taskRes, stockRes] = await Promise.all([
+          fetch(`/api/employee/tasks?shop_id=${shop.id}&employee_id=${emp.id}`),
+          fetch(`/api/employee/stock?shop_id=${shop.id}`),
+        ]);
 
-        if (!error && data) {
-          setEmpTasks(data as EmployeeTask[]);
+        const taskData = await taskRes.json();
+        const stockData = await stockRes.json();
+
+        if (taskRes.ok && taskData.success && Array.isArray(taskData.tasks)) {
+          setEmpTasks(taskData.tasks);
         } else {
           setEmpTasks([]);
         }
+
+        if (stockRes.ok && stockData.success && Array.isArray(stockData.items)) {
+          setShopStockItems(stockData.items);
+          const initialSelection: Record<string, { checked: boolean; quantity: string }> = {};
+          stockData.items.forEach((it: any) => {
+            initialSelection[it.id] = { checked: false, quantity: "" };
+          });
+          setSelectedItemsState(initialSelection);
+        } else {
+          setShopStockItems([]);
+        }
       } catch (err) {
-        console.warn("Task fetch exception:", err);
-        setEmpTasks([]);
+        console.warn("Error opening task modal:", err);
       } finally {
         setIsLoadingTasks(false);
+        setIsLoadingStockItems(false);
       }
     }
   }
 
   async function handleAssignTaskSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedTaskEmp || !shop) return;
-    if (!taskForm.title.trim()) {
-      toast.error("Please enter a task title.");
+    const activeEmp = employees.find((e) => e.id === targetEmployeeId) || selectedTaskEmp;
+    if (!activeEmp || !shop) {
+      toast.error("Please select an employee.");
       return;
     }
 
+    const selectedEntries = Object.entries(selectedItemsState).filter(
+      ([_, v]) => v.checked && Number(v.quantity) > 0
+    );
+
+    if (selectedEntries.length === 0) {
+      toast.error("Please select at least one stock item and enter a valid quantity (> 0).");
+      return;
+    }
+
+    // Build structured items array
+    const taskItems = selectedEntries.map(([id, v]) => {
+      const stockIt = shopStockItems.find((s) => s.id === id);
+      return {
+        inventory_id: stockIt?.inventory_id || id,
+        menu_item_id: stockIt?.menu_item_id || id,
+        name: stockIt?.name || "Item",
+        quantity: Math.max(1, parseInt(v.quantity, 10) || 0),
+        unit: stockIt?.unit || "pcs",
+        price: stockIt?.price,
+      };
+    });
+
+    const generatedTitle = `Stock Update — ` + taskItems.map((i) => `${i.name} (${i.quantity})`).join(", ");
+
     setIsSubmitting(true);
     try {
-      const supabase = createClient();
-      const newTaskData = {
+      const result = await assignTaskWithNotification({
         shop_id: shop.id,
-        employee_id: selectedTaskEmp.id,
-        title: taskForm.title.trim(),
-        description: taskForm.description.trim() || null,
+        employee_id: activeEmp.id,
+        employee_profile_id: activeEmp.profile_id,
+        employee_name: activeEmp.profile?.full_name || "Employee",
+        employee_mobile: activeEmp.profile?.phone || "",
+        title: generatedTitle,
+        description: taskForm.description.trim() || undefined,
         priority: taskForm.priority,
-        due_date: taskForm.due_date || null,
-        status: "pending",
-        assigned_by: user?.id || null,
-      };
+        due_date: taskForm.due_date || undefined,
+        assigned_by_id: user?.id,
+        assigned_by_name: user?.full_name || "Shopkeeper",
+        shop_name: shop.name || "BISHOP Shop",
+        task_items: taskItems,
+        items: taskItems,
+      });
 
-      const { data, error } = await supabase
-        .from("employee_tasks")
-        .insert(newTaskData)
-        .select()
-        .single();
-
-      if (error) {
-        console.warn("Task DB insert error, maintaining fallback state:", error);
-        // Fallback task entry so UI works seamlessly
-        const fallbackTask: EmployeeTask = {
-          id: `task_${Date.now()}`,
-          shop_id: shop.id,
-          employee_id: selectedTaskEmp.id,
-          title: taskForm.title.trim(),
-          description: taskForm.description.trim(),
-          priority: taskForm.priority,
-          due_date: taskForm.due_date,
-          status: "pending",
-          created_at: new Date().toISOString(),
-        };
-        setEmpTasks((prev) => [fallbackTask, ...prev]);
-      } else if (data) {
-        setEmpTasks((prev) => [data as EmployeeTask, ...prev]);
+      if (result.isDuplicate) {
+        toast.info(`Task "${result.task.title}" is already assigned.`);
+      } else {
+        toast.success(`Task assigned and BISHOP notification sent to ${activeEmp.profile?.full_name || "employee"}!`);
       }
 
-      toast.success(`Task assigned to ${selectedTaskEmp.profile?.full_name || "employee"}!`);
+      // AUTOMATICALLY CLOSE ASSIGN TASK MODAL UPON SUCCESS (REQ 5)
+      setSelectedTaskEmp(null);
       setTaskForm({ title: "", description: "", priority: "medium", due_date: "" });
+      setSelectedItemsState({});
     } catch (err: any) {
       console.error("Assign task error:", err);
       toast.error(err?.message || "Failed to assign task.");
@@ -744,43 +776,166 @@ export default function EmployeesPage() {
         </form>
       </Modal>
 
-      {/* MODAL 4: ASSIGN TASK */}
+      {/* MODAL 4: ASSIGN TASK WITH STOCK CHECKLIST */}
       <Modal
         isOpen={Boolean(selectedTaskEmp)}
         onClose={() => setSelectedTaskEmp(null)}
-        title={`${t.assignTask} — ${selectedTaskEmp?.profile?.full_name || ""}`}
+        title={t.assignTask}
         description=""
         size="lg"
       >
         <div className="space-y-6">
           {/* New Task Form */}
           <form onSubmit={handleAssignTaskSubmit} className="space-y-4 bg-slate-50 p-4 rounded-2xl border border-slate-200">
-            <Input
-              label={t.taskTitle}
-              value={taskForm.title}
-              onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })}
-              placeholder="e.g. Prepare orders"
-              required
-            />
-
+            {/* 1. Select Employee */}
             <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-slate-700">{t.taskDesc}</label>
+              <label className="text-xs font-extrabold uppercase text-slate-700 tracking-wider">
+                Select Employee:
+              </label>
+              <select
+                value={targetEmployeeId}
+                onChange={(e) => setTargetEmployeeId(e.target.value)}
+                className="w-full h-10 px-3 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+              >
+                {employees.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.profile?.full_name || "Employee"} ({emp.role || "Staff"})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 2. Select Stock Items Checklist */}
+            <div className="space-y-2">
+              <label className="text-xs font-extrabold uppercase text-slate-700 tracking-wider block">
+                Select Items & Task Quantities:
+              </label>
+
+              {isLoadingStockItems ? (
+                <div className="py-6 text-center">
+                  <LoadingSpinner size="md" />
+                </div>
+              ) : shopStockItems.length === 0 ? (
+                <div className="p-3 bg-white rounded-xl border border-slate-200 text-xs text-slate-500 font-semibold text-center">
+                  No stock items available in shop inventory.
+                </div>
+              ) : (
+                <div className="max-h-60 overflow-y-auto space-y-2 bg-white p-3 rounded-xl border border-slate-200">
+                  {shopStockItems.map((item) => {
+                    const currentState = selectedItemsState[item.id] || { checked: false, quantity: "" };
+
+                    return (
+                      <div
+                        key={item.id}
+                        className={`flex items-center justify-between gap-3 p-2.5 rounded-xl border transition-all ${
+                          currentState.checked
+                            ? "bg-purple-50/80 border-purple-300"
+                            : "bg-slate-50/50 border-slate-200"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <input
+                            type="checkbox"
+                            id={`stock_item_${item.id}`}
+                            checked={currentState.checked}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setSelectedItemsState((prev) => ({
+                                ...prev,
+                                [item.id]: {
+                                  checked,
+                                  quantity: checked ? (prev[item.id]?.quantity || "10") : "",
+                                },
+                              }));
+                            }}
+                            className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-slate-300 rounded cursor-pointer"
+                          />
+
+                          <label htmlFor={`stock_item_${item.id}`} className="flex items-center gap-2 text-xs cursor-pointer truncate">
+                            <span className="font-extrabold text-slate-900">{item.name}</span>
+                            {item.price !== undefined && item.price !== null && (
+                              <span className="font-semibold text-slate-500">₹{item.price}/{item.unit || "pcs"}</span>
+                            )}
+                            <Badge variant="default" size="sm" className="bg-slate-100 text-slate-600 border-slate-200">
+                              Current Stock: {item.quantity} {item.unit || "pcs"}
+                            </Badge>
+                          </label>
+                        </div>
+
+                        {/* Quantity Input */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="text-[11px] font-extrabold text-slate-500">Quantity:</span>
+                          <input
+                            type="number"
+                            min="1"
+                            placeholder="Qty"
+                            disabled={!currentState.checked}
+                            value={currentState.quantity}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setSelectedItemsState((prev) => ({
+                                ...prev,
+                                [item.id]: {
+                                  ...prev[item.id],
+                                  checked: true,
+                                  quantity: val,
+                                },
+                              }));
+                            }}
+                            className="w-20 h-8 bg-white border border-slate-300 rounded-lg text-center font-black text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500/20 disabled:bg-slate-100 disabled:text-slate-400"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Generated Title Preview */}
+            {(() => {
+              const selectedEntries = Object.entries(selectedItemsState).filter(
+                ([_, v]) => v.checked && Number(v.quantity) > 0
+              );
+              if (selectedEntries.length > 0) {
+                const previewText = selectedEntries
+                  .map(([id, v]) => {
+                    const item = shopStockItems.find((s) => s.id === id);
+                    return `${item?.name || "Item"} (${v.quantity})`;
+                  })
+                  .join(", ");
+
+                return (
+                  <div className="p-2.5 bg-purple-100/60 rounded-xl border border-purple-200 text-xs text-purple-900 flex items-center justify-between gap-2">
+                    <span className="font-extrabold">Generated Title:</span>
+                    <span className="font-bold truncate">Stock Update — {previewText}</span>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
+            {/* 3. Additional Instructions */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-extrabold uppercase text-slate-700 tracking-wider">
+                {t.taskDesc} (Optional Instructions):
+              </label>
               <textarea
                 value={taskForm.description}
                 onChange={(e) => setTaskForm({ ...taskForm, description: e.target.value })}
-                placeholder=""
+                placeholder="e.g. Please refill the evening stock."
                 rows={2}
-                className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-mint-500/20 focus:border-mint-500"
+                className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium text-slate-700">{t.priority}</label>
+                <label className="text-xs font-extrabold uppercase text-slate-700 tracking-wider">{t.priority}</label>
                 <select
                   value={taskForm.priority}
                   onChange={(e) => setTaskForm({ ...taskForm, priority: e.target.value as any })}
-                  className="w-full h-10 px-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-mint-500/20 focus:border-mint-500"
+                  className="w-full h-10 px-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
                 >
                   <option value="low">{t.lowPriority}</option>
                   <option value="medium">{t.mediumPriority}</option>
@@ -844,7 +999,13 @@ export default function EmployeesPage() {
                         </span>
                       )}
                     </div>
-                    <Badge variant="mint">{tk.status}</Badge>
+                    <Badge variant={tk.status === "completed" ? "success" : tk.status === "in_progress" ? "default" : "warning"}>
+                      {tk.status === "assigned" || tk.status === "pending"
+                        ? "Pending"
+                        : tk.status === "in_progress" || tk.status === "accepted"
+                        ? "In Progress"
+                        : "Completed"}
+                    </Badge>
                   </div>
                 ))}
               </div>

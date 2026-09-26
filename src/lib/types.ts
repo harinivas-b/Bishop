@@ -30,6 +30,9 @@ export interface Shop {
   description?: string;
   logo_url?: string;
   address?: string;
+  location?: string;
+  latitude?: number;
+  longitude?: number;
   phone?: string;
   email?: string;
   gst_number?: string;
@@ -66,6 +69,7 @@ export interface MenuItem {
   name: string;
   description?: string;
   price: number;
+  quantity?: number;
   image_url?: string;
   is_available: boolean;
   is_veg: boolean;
@@ -98,6 +102,7 @@ export interface Order {
   id: string;
   shop_id: string;
   order_number: string;
+  token_number?: string;
   customer_name?: string;
   customer_phone?: string;
   table_number?: string;
@@ -106,6 +111,10 @@ export interface Order {
   subtotal: number;
   tax: number;
   total: number;
+  grand_total?: number;
+  advance_amount?: number;
+  remaining_amount?: number;
+  is_pre_order?: boolean;
   payment_method?: PaymentMethod;
   payment_status: "pending" | "paid" | "refunded";
   notes?: string;
@@ -119,11 +128,15 @@ export interface Order {
 export interface OrderItem {
   id: string;
   order_id: string;
-  menu_item_id: string;
-  name: string;
-  price: number;
+  menu_item_id?: string;
+  product_id?: string;
+  name?: string;
+  product_name?: string;
+  price?: number;
+  unit_price?: number;
   quantity: number;
-  total: number;
+  total?: number;
+  line_total?: number;
   notes?: string;
 }
 
@@ -141,6 +154,20 @@ export interface Employee {
   profile?: Profile;
 }
 
+export type TaskStatus = "assigned" | "accepted" | "in_progress" | "completed" | "pending";
+
+/**
+ * Detailed item entry for stock update tasks.
+ */
+export interface TaskItemDetail {
+  inventory_id?: string;
+  menu_item_id?: string;
+  name: string;
+  quantity: number;
+  unit?: string;
+  price?: number;
+}
+
 /**
  * Task assigned to an employee.
  */
@@ -152,8 +179,48 @@ export interface EmployeeTask {
   description?: string;
   due_date?: string;
   priority: "low" | "medium" | "high";
-  status: "pending" | "in_progress" | "completed";
+  status: TaskStatus;
+  assigned_by?: string;
+  items?: TaskItemDetail[];
+  task_items?: TaskItemDetail[];
   created_at: string;
+  updated_at?: string;
+  employee?: Employee & { profile?: Profile };
+  assigned_by_profile?: Profile;
+}
+
+/**
+ * In-app notification for employee / shopkeeper.
+ */
+export interface AppNotification {
+  id: string;
+  shop_id: string;
+  recipient_profile_id: string;
+  employee_id?: string;
+  task_id?: string;
+  title: string;
+  message: string;
+  type: "task_assigned" | "task_updated" | "order_created";
+  metadata?: {
+    employee_name?: string;
+    employee_mobile?: string;
+    task_id?: string;
+    task_title?: string;
+    task_details?: string;
+    task_items?: TaskItemDetail[];
+    assigned_by_name?: string;
+    shop_name?: string;
+    date_time?: string;
+    status?: TaskStatus | string;
+    due_date?: string;
+    priority?: string;
+    order_number?: string;
+    customer_name?: string;
+    total?: number;
+  };
+  is_read: boolean;
+  created_at: string;
+  updated_at?: string;
 }
 
 /**

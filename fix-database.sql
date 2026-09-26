@@ -22,6 +22,9 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS table_number TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS notes TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method TEXT DEFAULT 'cash';
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'pending';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS advance_amount NUMERIC(10,2) DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS remaining_amount NUMERIC(10,2) DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_pre_order BOOLEAN DEFAULT false;
 
 ALTER TABLE order_items ADD COLUMN IF NOT EXISTS notes TEXT;
 
@@ -244,7 +247,7 @@ CREATE TABLE IF NOT EXISTS employee_tasks (
   description TEXT,
   due_date DATE,
   priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high')),
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed')),
+  status TEXT NOT NULL DEFAULT 'assigned',
   assigned_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -275,4 +278,49 @@ ON employee_tasks FOR ALL USING (
     AND employees.profile_id = auth.uid()
   )
 );
+
+-- 11. In-App Notifications Table & RLS Policies
+CREATE TABLE IF NOT EXISTS notifications (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+  recipient_profile_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  employee_id UUID REFERENCES employees(id) ON DELETE CASCADE,
+  task_id UUID REFERENCES employee_tasks(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'task_assigned',
+  metadata JSONB DEFAULT '{}'::jsonb,
+  is_read BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT unique_task_notification UNIQUE (task_id, type)
+);
+
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view own notifications" ON notifications;
+DROP POLICY IF EXISTS "Users can update own notifications" ON notifications;
+DROP POLICY IF EXISTS "Anyone can insert notifications" ON notifications;
+
+CREATE POLICY "Users can view own notifications"
+ON notifications FOR SELECT USING (recipient_profile_id = auth.uid());
+
+CREATE POLICY "Users can update own notifications"
+ON notifications FOR UPDATE USING (recipient_profile_id = auth.uid());
+
+CREATE POLICY "Anyone can insert notifications"
+ON notifications FOR INSERT WITH CHECK (true);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' 
+      AND schemaname = 'public' 
+      AND tablename = 'notifications'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE notifications;
+  END IF;
+END $$;
+
 

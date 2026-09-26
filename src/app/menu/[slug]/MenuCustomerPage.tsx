@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,10 +21,13 @@ import {
   Sparkles,
   ArrowRight,
   Plus,
+  Camera,
+  Loader2,
 } from "lucide-react";
 import type { Category, MenuItem, Shop } from "@/lib/types";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, getItemEmoji } from "@/lib/utils";
 import { useLanguageStore } from "@/stores/language-store";
+import { captureBillScreenshot } from "@/lib/screenshot";
 
 interface MenuCustomerPageProps {
   shop: Shop;
@@ -151,6 +154,9 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
   const { lang, toggleLang } = useLanguageStore();
   const t = DASHBOARD_TRANSLATIONS[lang || "en"].customerMenuPage;
 
+  const [localCategories, setLocalCategories] = useState<Category[]>(categories);
+  const [localMenuItems, setLocalMenuItems] = useState<MenuItem[]>(menuItems);
+
   const [cart, setCart] = useState<CartItem[]>([]);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
@@ -160,17 +166,104 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
 
   const [isOnline, setIsOnline] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const [placedOrder, setPlacedOrder] = useState<PlacedOrderDetails | null>(null);
+
+  const fetchLatestData = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const [categoriesRes, itemsRes, inventoryRes] = await Promise.all([
+        supabase
+          .from("categories")
+          .select("*")
+          .eq("shop_id", shop.id)
+          .eq("is_active", true)
+          .order("sort_order", { ascending: true }),
+        supabase
+          .from("menu_items")
+          .select("*")
+          .eq("shop_id", shop.id)
+          .order("sort_order", { ascending: true }),
+        supabase
+          .from("inventory")
+          .select("*")
+          .eq("shop_id", shop.id),
+      ]);
+
+      if (!categoriesRes.error && categoriesRes.data) {
+        setLocalCategories(categoriesRes.data as Category[]);
+      }
+
+      if (!itemsRes.error && itemsRes.data) {
+        const raw = itemsRes.data as MenuItem[];
+        const invMap = new Map<string, number>();
+        (inventoryRes.data || []).forEach((inv: any) => {
+          if (inv.name) invMap.set(inv.name.trim().toLowerCase(), inv.quantity ?? 0);
+        });
+
+        const merged = raw.map((item) => {
+          const key = item.name.trim().toLowerCase();
+          const qty = invMap.has(key) ? invMap.get(key) : (item.quantity ?? 10);
+          return {
+            ...item,
+            quantity: qty,
+            is_available: (qty ?? 10) > 0 ? item.is_available : false,
+          };
+        });
+
+        setLocalMenuItems(merged);
+      }
+    } catch (err) {
+      console.error("Error syncing customer menu data:", err);
+    }
+  }, [shop.id]);
+
+  useEffect(() => {
+    const supabase = createClient();
+
+    const channel = supabase
+      .channel(`realtime-menu-customer-${shop.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "menu_items", filter: `shop_id=eq.${shop.id}` },
+        () => {
+          fetchLatestData();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "inventory", filter: `shop_id=eq.${shop.id}` },
+        () => {
+          fetchLatestData();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "categories", filter: `shop_id=eq.${shop.id}` },
+        () => {
+          fetchLatestData();
+        }
+      )
+      .subscribe((status: string) => {
+        if (status === "SUBSCRIBED") {
+          fetchLatestData();
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [shop.id, fetchLatestData]);
 
   const groupedItems = useMemo(() => {
     const map = new Map<string, MenuItem[]>();
-    categories.forEach((cat) => map.set(cat.id, []));
-    menuItems.forEach((item) => {
+    localCategories.forEach((cat) => map.set(cat.id, []));
+    localMenuItems.forEach((item) => {
       const bucket = map.get(item.category_id);
       if (bucket) bucket.push(item);
     });
-    return categories.map((category) => ({ category, items: map.get(category.id) || [] }));
-  }, [categories, menuItems]);
+    return localCategories.map((category) => ({ category, items: map.get(category.id) || [] }));
+  }, [localCategories, localMenuItems]);
 
   const subtotal = useMemo(
     () => cart.reduce((sum, item) => sum + item.price * item.quantity, 0),
@@ -213,9 +306,19 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
   }, [cart, shop.slug]);
 
   function addToCart(item: MenuItem) {
+    const availQty = item.quantity ?? 10;
+    if (availQty <= 0 || !item.is_available) {
+      toast.error(`${item.name} is out of stock.`);
+      return;
+    }
+
     setCart((prev) => {
       const existing = prev.find((entry) => entry.menu_item_id === item.id);
       if (existing) {
+        if (existing.quantity >= availQty) {
+          toast.error(`Cannot add more. Only ${availQty} in stock.`);
+          return prev;
+        }
         return prev.map((entry) =>
           entry.menu_item_id === item.id
             ? { ...entry, quantity: entry.quantity + 1 }
@@ -292,33 +395,84 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
 
     setIsSubmitting(true);
     const orderNumber = createOrderNumber();
+    const tokenNumber = `BSH-${Math.floor(Math.random() * 9000 + 1000)}`;
     const currentCart = [...cart];
-    
-    const orderPayload = {
-      shop_id: shop.id,
-      order_number: orderNumber,
-      customer_name: customerName.trim(),
-      customer_phone: customerPhone.trim() || null,
-      table_number: "Takeaway",
-      status: "pending",
-      subtotal,
-      tax,
-      total,
-      payment_method: "cash",
-      payment_status: "pending",
-      notes: orderNotes.trim() || "Takeaway Cash Order",
-    };
-
-    const orderItems = currentCart.map((item) => ({
-      menu_item_id: item.menu_item_id,
-      name: item.name,
-      price: item.price,
-      quantity: item.quantity,
-      total: Number((item.price * item.quantity).toFixed(2)),
-      notes: item.notes?.trim() || null,
-    }));
+    const supabase = createClient();
 
     try {
+      // 1. Stock Pre-Validation: Ensure sufficient stock for all items
+      const { data: invRecords, error: invErr } = await supabase
+        .from("inventory")
+        .select("*")
+        .eq("shop_id", shop.id);
+
+      if (invErr) {
+        console.error("Inventory fetch pre-validation error:", invErr?.message, invErr?.code, invErr?.details, invErr?.hint);
+      }
+
+      const invMap = new Map<string, { id: string; quantity: number }>();
+      (invRecords || []).forEach((inv: any) => {
+        if (inv.name) {
+          invMap.set(inv.name.trim().toLowerCase(), { id: inv.id, quantity: inv.quantity ?? 0 });
+        }
+      });
+
+      for (const item of currentCart) {
+        const key = item.name.trim().toLowerCase();
+        if (invMap.has(key)) {
+          const inv = invMap.get(key)!;
+          if (inv.quantity < item.quantity) {
+            toast.error(`Insufficient stock for "${item.name}". Available: ${inv.quantity}, Requested: ${item.quantity}`);
+            setIsSubmitting(false);
+            return;
+          }
+        }
+      }
+
+      const numericToken = Number(tokenNumber.replace(/\D/g, "")) || Math.floor(10000 + Math.random() * 90000);
+      const generatedOrderId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `ord_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+      // Safe request payload logging (no secrets or sensitive tokens)
+      const safePayload = {
+        orderId: generatedOrderId,
+        shopId: shop.id,
+        orderNumber,
+        numericToken,
+        customerName: customerName.trim(),
+        tableNumber: "Takeaway",
+        subtotal,
+        tax,
+        total,
+        itemCount: currentCart.length,
+      };
+      console.log("Safe Order Submission Request Payload:", safePayload);
+
+      const orderPayload = {
+        id: generatedOrderId,
+        shop_id: shop.id,
+        order_number: orderNumber,
+        token_number: numericToken,
+        customer_name: customerName.trim(),
+        customer_phone: customerPhone.trim() || null,
+        table_number: "Takeaway",
+        status: "preparing",
+        subtotal,
+        gst_amount: tax,
+        grand_total: total,
+        payment_method: "pay_at_counter",
+        payment_status: "pending",
+        notes: orderNotes.trim() || "Takeaway Cash Order",
+      };
+
+      const orderItems = currentCart.map((item) => ({
+        menu_item_id: item.menu_item_id,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity,
+        total: Number((item.price * item.quantity).toFixed(2)),
+        notes: item.notes?.trim() || null,
+      }));
+
       if (!isOnline) {
         const existingQueue = window.localStorage.getItem(`${OFFLINE_ORDER_QUEUE_KEY}_${shop.slug}`);
         const queued = existingQueue ? JSON.parse(existingQueue) : [];
@@ -326,7 +480,7 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
         window.localStorage.setItem(`${OFFLINE_ORDER_QUEUE_KEY}_${shop.slug}`, JSON.stringify(queued));
 
         setPlacedOrder({
-          orderNumber,
+          orderNumber: tokenNumber,
           total,
           subtotal,
           tax,
@@ -340,26 +494,137 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
         return;
       }
 
-      const supabase = createClient();
+      let finalTokenNumber = `BSH-${numericToken}`;
+      let orderProcessed = false;
 
-      const { data: rpcData, error: rpcError } = await supabase.rpc("submit_customer_order", {
-        p_shop_id: shop.id,
-        p_table_number: "Takeaway",
-        p_customer_name: customerName.trim(),
-        p_customer_phone: customerPhone.trim() || null,
-        p_payment_method: "cash",
-        p_notes: orderNotes.trim() || "Takeaway Cash Order",
-        p_items: orderItems,
-      });
+      // Primary Attempt: Submit via Server API Route
+      try {
+        const apiRes = await fetch("/api/orders/submit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            shopId: shop.id,
+            customerName: customerName.trim(),
+            customerPhone: customerPhone.trim() || null,
+            orderNotes: orderNotes.trim() || "Takeaway Cash Order",
+            cart: currentCart,
+            subtotal,
+            tax,
+            total,
+          }),
+        });
 
-      if (rpcError || !rpcData) {
-        console.error("Order RPC Error:", rpcError);
-        throw new Error(rpcError?.message || "Order submission failed server validation.");
+        const apiData = await apiRes.json();
+        if (apiRes.ok && apiData.success) {
+          orderProcessed = true;
+          if (apiData.tokenNumber) {
+            finalTokenNumber = apiData.tokenNumber;
+          }
+        } else {
+          console.warn("API /api/orders/submit returned error, falling back to direct client insertion:", apiData);
+          if (apiData.error) {
+            console.error("API Error details:", apiData.error, apiData.code, apiData.details, apiData.hint);
+          }
+        }
+      } catch (apiErr: any) {
+        console.warn("API submit endpoint fetch error:", apiErr?.message, apiErr);
+      }
+
+      // Fallback Attempt: Direct Supabase Client Insertion if API route unhandled
+      if (!orderProcessed) {
+        let createdOrderId: string | null = null;
+
+        // Try RPC first if available
+        const { data: rpcData, error: rpcError } = await supabase.rpc("submit_customer_order", {
+          p_shop_id: shop.id,
+          p_table_number: "Takeaway",
+          p_customer_name: customerName.trim(),
+          p_customer_phone: customerPhone.trim() || null,
+          p_payment_method: "pay_at_counter",
+          p_notes: orderNotes.trim() || "Takeaway Cash Order",
+          p_items: orderItems,
+        });
+
+        if (rpcError) {
+          console.error("RPC submit_customer_order Error:", rpcError?.message, rpcError?.code, rpcError?.details, rpcError?.hint);
+        }
+
+        if (!rpcError && rpcData && (rpcData as any).order_id) {
+          createdOrderId = (rpcData as any).order_id;
+          if ((rpcData as any).token_number) finalTokenNumber = `BSH-${(rpcData as any).token_number}`;
+          orderProcessed = true;
+        } else {
+          // Direct insertion fallback with schema-aligned payload
+          const { error: orderErr } = await supabase
+            .from("orders")
+            .insert(orderPayload);
+
+          if (orderErr) {
+            console.error("Orders direct insert Error:", orderErr?.message, orderErr?.code, orderErr?.details, orderErr?.hint);
+            throw orderErr;
+          }
+
+          createdOrderId = generatedOrderId;
+
+          try {
+            // Insert order items
+            const itemInserts = currentCart.map((item) => ({
+              order_id: createdOrderId,
+              product_id: item.menu_item_id,
+              product_name: item.name,
+              unit_price: item.price,
+              quantity: item.quantity,
+              line_total: Number((item.price * item.quantity).toFixed(2)),
+              notes: item.notes?.trim() || null,
+            }));
+
+            const { error: itemsErr } = await supabase.from("order_items").insert(itemInserts);
+            if (itemsErr) {
+              console.error("Order items direct insert Error:", itemsErr?.message, itemsErr?.code, itemsErr?.details, itemsErr?.hint);
+              throw itemsErr;
+            }
+
+            // Deduct stock after successful order creation
+            for (const item of currentCart) {
+              const key = item.name.trim().toLowerCase();
+              if (invMap.has(key)) {
+                const inv = invMap.get(key)!;
+                const newQty = Math.max(0, inv.quantity - item.quantity);
+
+                const { error: stockUpdateErr } = await supabase
+                  .from("inventory")
+                  .update({ quantity: newQty, updated_at: new Date().toISOString() })
+                  .eq("id", inv.id);
+
+                if (stockUpdateErr) {
+                  console.error("Inventory update Error:", stockUpdateErr?.message, stockUpdateErr?.code, stockUpdateErr?.details, stockUpdateErr?.hint);
+                }
+
+                if (newQty === 0) {
+                  await supabase
+                    .from("menu_items")
+                    .update({ is_available: false, updated_at: new Date().toISOString() })
+                    .eq("id", item.menu_item_id);
+                }
+              }
+            }
+
+            orderProcessed = true;
+          } catch (itemOrStockErr) {
+            // Rollback orphan orders row to prevent duplicate/incomplete order on retry
+            if (createdOrderId) {
+              console.warn("Rolling back orphan orders record to prevent duplicates on retry:", createdOrderId);
+              await supabase.from("order_items").delete().eq("order_id", createdOrderId);
+              await supabase.from("orders").delete().eq("id", createdOrderId);
+            }
+            throw itemOrStockErr;
+          }
+        }
       }
 
       setPlacedOrder({
-        orderNumber: rpcData.order_number,
-        total: rpcData.total || total,
+        orderNumber: finalTokenNumber,
+        total,
         subtotal,
         tax,
         customerName: customerName.trim(),
@@ -367,10 +632,11 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
         cartItems: currentCart,
         createdAt: new Date().toLocaleString(),
       });
+
       setCart([]);
-      toast.success("Cash order confirmed!");
+      toast.success(`Cash order confirmed! Token ID: ${finalTokenNumber}`);
     } catch (error: any) {
-      console.error("Submit order failed", error);
+      console.error("Submit order failed:", error?.message, error?.code, error?.details, error?.hint, error);
       toast.error(error?.message || "Unable to place order. Please try again.");
     } finally {
       setIsSubmitting(false);
@@ -383,14 +649,36 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
     const halfTaxAmount = (placedOrder.tax / 2).toFixed(2);
     const payT = DASHBOARD_TRANSLATIONS[lang || "en"].customerPaymentPage;
 
+    async function handleTakeScreenshot() {
+      console.log("[Screenshot] 1. Take Screenshot button clicked");
+      if (isCapturingScreenshot) {
+        console.log("[Screenshot] Capture already in progress, ignoring duplicate click");
+        return;
+      }
+      setIsCapturingScreenshot(true);
+      try {
+        await captureBillScreenshot(
+          "thermal-receipt",
+          `BISHOP_Bill_${placedOrder?.orderNumber || "Receipt"}.png`
+        );
+        toast.success("Screenshot saved successfully!");
+      } catch (err: any) {
+        console.error("[Screenshot] Screenshot error message:", err?.message || String(err));
+        console.error("[Screenshot] Screenshot error stack:", err?.stack || "No stack trace");
+        toast.error("Failed to capture screenshot: " + (err?.message || "Unknown error"));
+      } finally {
+        setIsCapturingScreenshot(false);
+      }
+    }
+
     return (
       <div className="min-h-dvh bg-slate-100 flex items-center justify-center p-4 py-8">
         <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden print:border-none print:shadow-none print:w-full print:max-w-none">
           
-          {/* Top Pending Banner */}
-          <div className="bg-amber-500 text-white p-4 text-center print:hidden flex items-center justify-center gap-2">
-            <Clock className="h-6 w-6" />
-            <span className="font-extrabold text-base uppercase tracking-wider">{t.orderPlacedTitle}</span>
+          {/* Top Confirmed Banner */}
+          <div className="bg-emerald-600 text-white p-4 text-center print:hidden flex items-center justify-center gap-2">
+            <CheckCircle2 className="h-6 w-6" />
+            <span className="font-extrabold text-base uppercase tracking-wider">{t.orderPlacedTitle || "Order Confirmed!"}</span>
           </div>
 
           {/* Thermal Receipt Content Container */}
@@ -451,7 +739,14 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
               {placedOrder.cartItems.map((item, idx) => (
                 <div key={idx} className="grid grid-cols-12 text-[11px] items-start py-0.5">
                   <span className="col-span-1 text-slate-400">{idx + 1}</span>
-                  <span className="col-span-5 font-semibold text-slate-900 break-words">{item.name}</span>
+                  <span className="col-span-5 font-semibold text-slate-900 break-words flex items-center gap-1">
+                    {getItemEmoji(item.name) && (
+                      <span className="text-xs leading-none shrink-0" aria-hidden="true">
+                        {getItemEmoji(item.name)}
+                      </span>
+                    )}
+                    <span>{item.name}</span>
+                  </span>
                   <span className="col-span-2 text-center font-bold">{item.quantity}</span>
                   <span className="col-span-2 text-right text-slate-600">{item.price}</span>
                   <span className="col-span-2 text-right font-bold text-slate-900">
@@ -496,13 +791,13 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
             {/* Divider */}
             <div className="border-b-2 border-dashed border-slate-300 my-2" />
 
-            {/* Payment Mode & Status: PENDING */}
+            {/* Payment Mode & Status: CONFIRMED */}
             <div className="space-y-1.5 text-center">
               <p className="text-[11px] text-slate-600">
-                Payment Mode: <strong className="uppercase text-slate-900">CASH</strong>
+                Payment Method: <strong className="uppercase text-slate-900">CASH</strong>
               </p>
-              <div className="inline-block px-3 py-1 bg-amber-50 border border-amber-300 rounded-lg text-amber-900 font-extrabold text-[11px] uppercase tracking-wider">
-                {payT.paymentStatusPending || "PAYMENT STATUS: PENDING (Pay at Counter)"}
+              <div className="inline-block px-3 py-1 bg-emerald-50 border border-emerald-300 rounded-lg text-emerald-900 font-extrabold text-[11px] uppercase tracking-wider">
+                ORDER STATUS: CONFIRMED
               </div>
             </div>
 
@@ -522,9 +817,11 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
             <Button
               size="lg"
               className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold"
-              onClick={() => window.print()}
+              onClick={handleTakeScreenshot}
+              disabled={isCapturingScreenshot}
+              leftIcon={isCapturingScreenshot ? <Loader2 className="h-5 w-5 animate-spin" /> : <Camera className="h-5 w-5" />}
             >
-              {payT.printBill}
+              {isCapturingScreenshot ? "Capturing..." : (payT.takeScreenshot || "Take Screenshot")}
             </Button>
 
             <Button
@@ -590,25 +887,59 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
 
                 <div className="grid gap-4 sm:grid-cols-2">
                   {items.length ? (
-                    items.map((item) => (
-                      <div key={item.id} className="rounded-2xl border border-slate-100 p-4 hover:border-mint-200 transition-colors bg-slate-50 flex flex-col justify-between">
-                        <div>
-                          <div className="flex items-start justify-between gap-2">
-                            <h3 className="text-base font-semibold text-slate-900">{item.name}</h3>
-                            <Badge variant={item.is_veg ? "success" : "danger"} size="sm">
-                              {item.is_veg ? t.veg : t.nonVeg}
-                            </Badge>
+                    items.map((item) => {
+                      const availQty = item.quantity ?? 10;
+                      const isItemAvailable = availQty > 0 && item.is_available;
+
+                      return (
+                        <div
+                          key={item.id}
+                          className={`rounded-2xl border p-4 transition-colors flex flex-col justify-between ${
+                            isItemAvailable
+                              ? "border-slate-100 bg-slate-50 hover:border-mint-200"
+                              : "border-red-100 bg-red-50/20 opacity-80"
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-start justify-between gap-2">
+                              <h3 className="text-base font-semibold text-slate-900 flex items-center gap-1.5">
+                                {getItemEmoji(item.name, category.name) && (
+                                  <span className="text-base leading-none shrink-0" aria-hidden="true">
+                                    {getItemEmoji(item.name, category.name)}
+                                  </span>
+                                )}
+                                <span>{item.name}</span>
+                              </h3>
+                              <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                                <Badge variant={item.is_veg ? "success" : "danger"} size="sm">
+                                  {item.is_veg ? t.veg : t.nonVeg}
+                                </Badge>
+                                <Badge variant={isItemAvailable ? "mint" : "danger"} size="sm">
+                                  {isItemAvailable ? `Stock: ${availQty}` : (t.outOfStock || "Out of Stock")}
+                                </Badge>
+                              </div>
+                            </div>
+                            <p className="text-xs text-slate-500 mt-1 line-clamp-2">
+                              {item.description || "Fresh & delicious selection."}
+                            </p>
                           </div>
-                          <p className="text-xs text-slate-500 mt-1 line-clamp-2">{item.description || "Fresh & delicious selection."}</p>
+                          <div className="mt-4 flex items-center justify-between pt-2 border-t border-slate-200/50">
+                            <span className="text-base font-extrabold text-slate-900">
+                              {formatCurrency(item.price)}
+                            </span>
+                            <Button
+                              size="sm"
+                              onClick={() => addToCart(item)}
+                              disabled={!isItemAvailable}
+                              variant={isItemAvailable ? "primary" : "secondary"}
+                              leftIcon={<Plus className="h-3.5 w-3.5" />}
+                            >
+                              {isItemAvailable ? t.add : (t.outOfStock || "Out of Stock")}
+                            </Button>
+                          </div>
                         </div>
-                        <div className="mt-4 flex items-center justify-between pt-2 border-t border-slate-200/50">
-                          <span className="text-base font-extrabold text-slate-900">{formatCurrency(item.price)}</span>
-                          <Button size="sm" onClick={() => addToCart(item)} leftIcon={<Plus className="h-3.5 w-3.5" />}>
-                            {t.add}
-                          </Button>
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   ) : (
                     <p className="text-xs text-slate-400 py-4 col-span-2">No active items in this category.</p>
                   )}
@@ -639,7 +970,14 @@ export default function MenuCustomerPage({ shop, categories, menuItems }: MenuCu
                   {cart.map((item) => (
                     <div key={item.menu_item_id} className="rounded-2xl border border-slate-100 bg-slate-50 p-3 text-sm space-y-2">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-semibold text-slate-900">{item.name}</span>
+                        <span className="font-semibold text-slate-900 flex items-center gap-1.5">
+                          {getItemEmoji(item.name) && (
+                            <span className="text-sm leading-none shrink-0" aria-hidden="true">
+                              {getItemEmoji(item.name)}
+                            </span>
+                          )}
+                          <span>{item.name}</span>
+                        </span>
                         <div className="flex items-center gap-2">
                           <button
                             type="button"

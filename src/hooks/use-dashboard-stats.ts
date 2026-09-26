@@ -146,7 +146,7 @@ export function useDashboardStats() {
 
         supabase
           .from("orders")
-          .select("id, total, created_at")
+          .select("id, total, grand_total, status, payment_status, created_at")
           .eq("shop_id", shop.id)
           .gte("created_at", thirtyDaysAgo)
           .neq("status", "cancelled")
@@ -165,7 +165,7 @@ export function useDashboardStats() {
       ]);
 
       const thirtyDaysRecords = last30DaysOrdersRes.data || [];
-      const shopOrderIds = (shopOrderIdsRes.data || []).map((o) => o.id);
+      const shopOrderIds = (shopOrderIdsRes.data || []).map((o: any) => o.id);
 
       // Fetch top items scoped strictly to shop's order IDs (eliminating cross-tenant data leak)
       let topItemsData: { name: string; quantity: number; total: number }[] = [];
@@ -189,8 +189,11 @@ export function useDashboardStats() {
       let totalRevenue = 0;
 
       for (const order of thirtyDaysRecords) {
+        const isConfirmed = order.status === "confirmed" || order.status === "paid" || order.payment_status === "paid";
+        if (!isConfirmed) continue;
+
         const orderTime = new Date(order.created_at).getTime();
-        const t = order.total || 0;
+        const t = Number(order.total || order.grand_total || 0);
 
         totalRevenue += t; 
 
@@ -219,7 +222,7 @@ export function useDashboardStats() {
         const key = d.toISOString().slice(0, 10);
         dailyMap.set(key, { revenue: 0, orders: 0 });
       }
-      last30DaysOrdersRes.data?.forEach((order) => {
+      last30DaysOrdersRes.data?.forEach((order: any) => {
         const key = new Date(order.created_at).toISOString().slice(0, 10);
         const entry = dailyMap.get(key);
         if (entry) {
@@ -237,7 +240,7 @@ export function useDashboardStats() {
 
       // Orders by status
       const statusMap = new Map<string, number>();
-      ordersByStatusRes.data?.forEach((o) => {
+      ordersByStatusRes.data?.forEach((o: any) => {
         statusMap.set(o.status, (statusMap.get(o.status) || 0) + 1);
       });
       const ordersByStatus: StatusCount[] = Array.from(
@@ -265,7 +268,7 @@ export function useDashboardStats() {
 
       const lowStockCount =
         lowStockRes.data?.filter(
-          (item) =>
+          (item: any) =>
             item.quantity !== null &&
             (item.quantity <= item.min_quantity || item.quantity === 0)
         ).length || 0;
@@ -293,7 +296,7 @@ export function useDashboardStats() {
     } finally {
       setIsLoading(false);
     }
-  }, [shop]);
+  }, [shop?.id]);
 
   useEffect(() => {
     fetchStats();

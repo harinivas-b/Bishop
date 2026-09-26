@@ -18,11 +18,17 @@ import {
   ArrowRight,
   Sparkles,
   Languages,
+  Navigation,
+  Compass,
+  LocateFixed,
+  CheckCircle2,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Shop, Profile } from "@/lib/types";
 import { useLanguageStore } from "@/stores/language-store";
 import { DASHBOARD_TRANSLATIONS } from "@/lib/translations";
+
+import { reverseGeocodeCoordinates, logGpsDiagnostics } from "@/lib/location";
 
 export default function ShopSetupPage() {
   const router = useRouter();
@@ -32,6 +38,10 @@ export default function ShopSetupPage() {
   const settT = DASHBOARD_TRANSLATIONS[lang || "en"].settingsPage;
 
   const [isLoading, setIsLoading] = useState(false);
+  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
+  const [latitude, setLatitude] = useState<number | null>(null);
+  const [longitude, setLongitude] = useState<number | null>(null);
+
   const [form, setForm] = useState({
     name: "",
     description: "",
@@ -55,6 +65,62 @@ export default function ShopSetupPage() {
       .replace(/\s+/g, "-")
       .replace(/-+/g, "-")
       .slice(0, 50);
+  }
+
+  function handleDetectLocation() {
+    if (!navigator.geolocation) {
+      toast.error("Geolocation is not supported by your browser. Please enter your shop location manually.");
+      return;
+    }
+
+    setIsDetectingLocation(true);
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        setLatitude(lat);
+        setLongitude(lng);
+
+        // Structured Reverse Geocoding using OpenStreetMap Nominatim API
+        try {
+          const locationData = await reverseGeocodeCoordinates(lat, lng);
+          logGpsDiagnostics("ShopSetupPage.getCurrentPosition", position, locationData);
+
+          if (locationData) {
+            if (!form.location) {
+              updateForm("location", locationData.cityRegion);
+            }
+            if (!form.address) {
+              updateForm("address", locationData.streetAddress);
+            }
+          }
+        } catch (err) {
+          console.warn("Reverse geocoding error:", err);
+        } finally {
+          setIsDetectingLocation(false);
+          toast.success("Shop GPS location captured successfully! 📍");
+        }
+      },
+      (error) => {
+        setIsDetectingLocation(false);
+        console.warn("Geolocation error:", error);
+        if (error.code === error.PERMISSION_DENIED) {
+          toast.error("Location permission denied. You can manually type your shop address.");
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          toast.error("Location unavailable. Please enter your shop address manually.");
+        } else if (error.code === error.TIMEOUT) {
+          toast.error("Location request timed out. Please try again or type manually.");
+        } else {
+          toast.error("Unable to retrieve location. Please type your shop address manually.");
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      }
+    );
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -139,6 +205,7 @@ export default function ShopSetupPage() {
       const { data: existingShops, error: searchError } = await supabase
         .from("shops")
         .select("*")
+        .eq("owner_id", authUser.id)
         .ilike("name", form.name.trim())
         .limit(1);
 
@@ -178,13 +245,38 @@ export default function ShopSetupPage() {
         slug = `${slug}-${Math.floor(1000 + Math.random() * 9000)}`;
       }
 
+      let finalDescription = form.description.trim() || "";
+      if (latitude !== null && longitude !== null) {
+        finalDescription = finalDescription
+          .replace(/__LAT__:[^\s_]+/g, "")
+          .replace(/__LNG__:[^\s_]+/g, "")
+          .trim();
+        finalDescription += ` __LAT__:${latitude} __LNG__:${longitude}`;
+      }
+
+      const ownerName =
+        authUser.user_metadata?.full_name ||
+        profileToUse?.full_name ||
+        user?.full_name ||
+        "Shopkeeper";
+
+      const ownerAge = parseInt(form.owner_age) || 18;
+      const phoneVal = form.phone_number.trim() || null;
+      const shopNameVal = form.name.trim();
+
       const shopPayload: any = {
-        name: form.name.trim(),
+        name: shopNameVal,
+        shop_name: shopNameVal,
+        owner_name: ownerName,
+        owner_age: ownerAge,
         slug,
-        description: form.description.trim() || null,
+        description: finalDescription || null,
         address: form.address.trim() || null,
         location: form.location.trim() || null,
-        phone: form.phone_number.trim() || null,
+        latitude: latitude !== null ? latitude : null,
+        longitude: longitude !== null ? longitude : null,
+        phone: phoneVal,
+        phone_number: phoneVal,
         email: form.email.trim() || null,
         gst_number: form.gst_number.trim() || null,
         tax_rate: parseFloat(form.tax_rate) || 0,
@@ -192,15 +284,40 @@ export default function ShopSetupPage() {
         is_active: true,
       };
 
-      const { data: newShop, error: shopError } = await supabase
+      let newShop: any = null;
+      let shopError: any = null;
+
+      const directRes = await supabase
         .from("shops")
         .insert(shopPayload)
         .select("*")
         .single();
 
-      if (shopError) {
-        console.error("Shop insertion error:", shopError);
-        toast.error(shopError.message || "Failed to create shop.");
+      newShop = directRes.data;
+      shopError = directRes.error;
+
+      if (shopError && (shopError.code === "PGRST204" || shopError.code === "42703" || shopError.message?.includes("column"))) {
+        delete shopPayload.latitude;
+        delete shopPayload.longitude;
+
+        const fallbackRes = await supabase
+          .from("shops")
+          .insert(shopPayload)
+          .select("*")
+          .single();
+
+        newShop = fallbackRes.data;
+        shopError = fallbackRes.error;
+      }
+
+      if (shopError || !newShop) {
+        console.error("Shop insertion error:", {
+          message: shopError?.message,
+          code: shopError?.code,
+          details: shopError?.details,
+          hint: shopError?.hint,
+        });
+        toast.error(shopError?.message || "Failed to create shop.");
         return;
       }
 
@@ -329,6 +446,60 @@ export default function ShopSetupPage() {
               value={form.description}
               onChange={(e) => updateForm("description", e.target.value)}
             />
+
+            {/* ── SHOP LOCATION & GPS TRACKING SECTION ── */}
+            <div className="border border-mint-200/80 bg-mint-50/40 rounded-2xl p-4 sm:p-5 flex flex-col gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 text-mint-800 font-extrabold text-sm sm:text-base">
+                    <Navigation className="h-4 w-4 text-mint-600 shrink-0" />
+                    <span>Shop Location & GPS Tracking</span>
+                  </div>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    Capture your shop's physical GPS location for nearby customer discovery.
+                  </p>
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDetectLocation}
+                  isLoading={isDetectingLocation}
+                  leftIcon={<LocateFixed className="h-4 w-4 text-mint-600" />}
+                  className="border-mint-300 text-mint-800 hover:bg-mint-100/80 font-bold shrink-0 shadow-xs"
+                >
+                  {isDetectingLocation ? "Detecting GPS..." : "Use My Current Location"}
+                </Button>
+              </div>
+
+              {/* Status Badge & Map Preview */}
+              {latitude !== null && longitude !== null && (
+                <div className="flex flex-col gap-3 pt-1">
+                  <div className="inline-flex items-center gap-2 bg-mint-100/90 text-mint-900 px-3 py-1.5 rounded-xl text-xs font-bold border border-mint-300/60 shadow-2xs">
+                    <CheckCircle2 className="h-4 w-4 text-mint-600 shrink-0" />
+                    <span>
+                      {form.address || form.location
+                        ? `Shop Location Saved: ${form.address || form.location}`
+                        : "Shop Location Saved"}
+                    </span>
+                  </div>
+
+                  {/* OpenStreetMap Map Pin Preview */}
+                  <div className="relative w-full h-36 rounded-xl overflow-hidden border border-mint-200/90 shadow-inner bg-slate-100">
+                    <iframe
+                      title="Shop Location Preview Map"
+                      width="100%"
+                      height="100%"
+                      frameBorder="0"
+                      scrolling="no"
+                      src={`https://www.openstreetmap.org/export/embed.html?bbox=${longitude - 0.005}%2C${latitude - 0.005}%2C${longitude + 0.005}%2C${latitude + 0.005}&layer=mapnik&marker=${latitude}%2C${longitude}`}
+                      className="w-full h-full filter contrast-[1.03] saturate-[1.1]"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Input

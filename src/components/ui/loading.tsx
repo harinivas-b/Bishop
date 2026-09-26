@@ -1,6 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import { Loader2 } from "lucide-react";
 
@@ -33,12 +34,17 @@ export function LoadingScreen({
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ type: "spring", stiffness: 200, damping: 20 }}
-          className="flex items-center gap-2"
+          className="flex items-center gap-3"
         >
-          <div className="h-10 w-10 rounded-xl bg-mint-500 flex items-center justify-center shadow-lg shadow-mint-500/25">
-            <span className="text-white font-bold text-lg">B</span>
-          </div>
-          <span className="text-2xl font-bold text-slate-900 tracking-tight">
+          <Image
+            src="/bishop-logo.webp"
+            alt="BISHOP"
+            width={48}
+            height={48}
+            className="h-12 w-auto object-contain drop-shadow-sm"
+            priority
+          />
+          <span className="text-2xl font-black text-emerald-600 tracking-tight">
             BISHOP
           </span>
         </motion.div>

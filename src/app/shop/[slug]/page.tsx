@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import MenuCustomerPage from "@/app/menu/[slug]/MenuCustomerPage";
 import type { Category, MenuItem, Shop } from "@/lib/types";
+import { cleanShopDescription } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -39,9 +40,11 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     };
   }
 
+  const cleanedDesc = cleanShopDescription(shop.description);
+
   return {
     title: `${shopName} — Menu & Contactless Ordering | BISHOP`,
-    description: shop.description || `Browse the digital menu for ${shopName} and place your order directly from your phone.`,
+    description: cleanedDesc || `Browse the digital menu for ${shopName} and place your order directly from your phone.`,
   };
 }
 

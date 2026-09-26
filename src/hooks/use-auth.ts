@@ -16,8 +16,12 @@ export function useAuth() {
   useEffect(() => {
     const supabase = createClient();
 
+    let isLoaded = false;
+
     // Fetch user profile and shop data
     async function loadUserData(userId: string) {
+      if (isLoaded) return;
+      isLoaded = true;
       try {
         // Fetch profile and potential owned shop in parallel for speed
         const [profileRes, ownedShopRes] = await Promise.all([
@@ -72,9 +76,9 @@ export function useAuth() {
     }
 
     // Check initial session
-    supabase.auth.getUser().then(({ data: { user: authUser } }) => {
-      if (authUser) {
-        loadUserData(authUser.id);
+    supabase.auth.getUser().then(({ data }: any) => {
+      if (data?.user) {
+        loadUserData(data.user.id);
       } else {
         setLoading(false);
       }
@@ -83,7 +87,7 @@ export function useAuth() {
     // Listen for auth changes
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((_event: any, session: any) => {
       if (session?.user) {
         loadUserData(session.user.id);
       } else {

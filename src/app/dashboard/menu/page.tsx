@@ -21,6 +21,7 @@ const emptyItem = {
   name: "",
   description: "",
   price: "",
+  quantity: "10",
   category_id: "",
   is_available: true,
   is_veg: true,
@@ -44,7 +45,7 @@ export default function MenuPage() {
 
     try {
       const supabase = createClient();
-      const [categoriesRes, itemsRes] = await Promise.all([
+      const [categoriesRes, itemsRes, inventoryRes] = await Promise.all([
         supabase
           .from("categories")
           .select("*")
@@ -55,14 +56,37 @@ export default function MenuPage() {
           .select("*")
           .eq("shop_id", shop.id)
           .order("sort_order", { ascending: true }),
+        supabase
+          .from("inventory")
+          .select("*")
+          .eq("shop_id", shop.id),
       ]);
 
       if (categoriesRes.error || itemsRes.error) {
         throw categoriesRes.error || itemsRes.error;
       }
 
+      const rawItems = (itemsRes.data as MenuItem[]) || [];
+      const inventoryItems = inventoryRes.data || [];
+      const inventoryMap = new Map<string, number>();
+      inventoryItems.forEach((inv: any) => {
+        if (inv.name) {
+          inventoryMap.set(inv.name.trim().toLowerCase(), inv.quantity ?? 0);
+        }
+      });
+
+      const mergedItems = rawItems.map((item) => {
+        const key = item.name.trim().toLowerCase();
+        const qty = inventoryMap.has(key) ? inventoryMap.get(key) : (item.quantity ?? 10);
+        return {
+          ...item,
+          quantity: qty,
+          is_available: (qty ?? 10) > 0 ? item.is_available : false,
+        };
+      });
+
       setCategories((categoriesRes.data as Category[]) || []);
-      setItems((itemsRes.data as MenuItem[]) || []);
+      setItems(mergedItems);
     } catch (error) {
       console.error("Error fetching menu data:", error);
       toast.error("Failed to load menu data");
@@ -111,13 +135,16 @@ export default function MenuPage() {
 
     try {
       const supabase = createClient();
+      const parsedQty = Math.max(0, parseInt(itemForm.quantity, 10) || 0);
+      const isAvail = parsedQty > 0 ? itemForm.is_available : false;
+
       const payload = {
         shop_id: shop.id,
         category_id: itemForm.category_id,
         name: itemForm.name.trim(),
         description: itemForm.description.trim() || null,
         price: parseFloat(itemForm.price) || 0,
-        is_available: itemForm.is_available,
+        is_available: isAvail,
         is_veg: itemForm.is_veg,
       };
 
@@ -128,6 +155,15 @@ export default function MenuPage() {
           .eq("id", editingItem.id);
 
         if (error) throw error;
+
+        // Sync products table
+        await supabase.from("products").upsert({
+          id: editingItem.id,
+          shop_id: shop.id,
+          name: itemForm.name.trim(),
+          price: parseFloat(itemForm.price) || 0,
+        });
+
         toast.success("Menu item updated");
       } else {
         const { data, error } = await supabase
@@ -137,8 +173,48 @@ export default function MenuPage() {
           .single();
 
         if (error) throw error;
-        setItems((prev) => [...prev, data as MenuItem]);
+
+        // Sync products table
+        if (data) {
+          await supabase.from("products").upsert({
+            id: data.id,
+            shop_id: shop.id,
+            name: data.name,
+            price: data.price,
+          });
+        }
+
         toast.success("Menu item added");
+      }
+
+      // Sync inventory table record
+      const itemName = itemForm.name.trim();
+      const { data: existingInv } = await supabase
+        .from("inventory")
+        .select("id")
+        .eq("shop_id", shop.id)
+        .ilike("name", itemName)
+        .maybeSingle();
+
+      if (existingInv) {
+        await supabase
+          .from("inventory")
+          .update({
+            quantity: parsedQty,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existingInv.id);
+      } else {
+        await supabase
+          .from("inventory")
+          .insert({
+            shop_id: shop.id,
+            name: itemName,
+            quantity: parsedQty,
+            unit: "pcs",
+            min_quantity: 2,
+            cost_per_unit: parseFloat(itemForm.price) || 0,
+          });
       }
 
       setEditingItem(null);
@@ -156,6 +232,7 @@ export default function MenuPage() {
       name: item.name,
       description: item.description || "",
       price: item.price.toString(),
+      quantity: (item.quantity ?? 10).toString(),
       category_id: item.category_id,
       is_available: item.is_available,
       is_veg: item.is_veg !== false,
@@ -246,13 +323,24 @@ export default function MenuPage() {
               onChange={(e) => setItemForm((prev) => ({ ...prev, name: e.target.value }))}
               required
             />
-            <Input
-              label={t.price}
-              type="number"
-              value={itemForm.price}
-              onChange={(e) => setItemForm((prev) => ({ ...prev, price: e.target.value }))}
-              required
-            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Input
+                label={t.price}
+                type="number"
+                value={itemForm.price}
+                onChange={(e) => setItemForm((prev) => ({ ...prev, price: e.target.value }))}
+                required
+              />
+              <Input
+                label={t.quantity || "Available Stock"}
+                type="number"
+                min="0"
+                value={itemForm.quantity}
+                onChange={(e) => setItemForm((prev) => ({ ...prev, quantity: e.target.value }))}
+                placeholder="10"
+                required
+              />
+            </div>
             <label className="block text-sm font-medium text-slate-700">
               {t.category}
             </label>
@@ -370,9 +458,11 @@ export default function MenuPage() {
                       <p className="text-base font-semibold text-slate-900 truncate">{item.name}</p>
                       <p className="text-sm text-slate-500 truncate">{item.description || t.noDescription}</p>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant={item.is_available ? "success" : "danger"}>
-                        {item.is_available ? t.available : t.hidden}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant={(item.quantity ?? 10) > 0 && item.is_available ? "success" : "danger"}>
+                        {(item.quantity ?? 10) > 0 && item.is_available
+                          ? `Stock: ${item.quantity ?? 10}`
+                          : (t.outOfStock || "Out of Stock")}
                       </Badge>
                       <span className="font-semibold text-slate-900 tabular-nums">
                         {item.price.toLocaleString("en-IN", { style: "currency", currency: shop?.currency || "INR" })}
